@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="TestDataGeneratorSettingsState">
+    <option name="userDefinedGenerators">
+      <list>
+        <CustomGeneratorSettings>
+          <option name="data">
+            <map>
+              <entry key="delimiter_key" value=",&#10;" />
+              <entry key="postfix_key" value="" />
+              <entry key="prefix_key" value="" />
+              <entry key="template_key" value="{&#10;    &quot;tovar_code&quot;: &quot;$uuid&quot;,&#10;    &quot;tovar_name&quot;: &quot;Никтиа земляника&quot;,&#10;    &quot;tovar_group&quot;: &quot;Чай&quot;, &#10;    &quot;tovar_property&quot;: {&quot;weight&quot;: 0.1},&#10;    &quot;tovar_ostatok&quot;: 20,&#10;    &quot;tovar_sold&quot;: 10&#10;    &quot;date&quot;: &quot;$date3&quot;&#10;}" />
+            </map>
+          </option>
+          <option name="name" value="etna test" />
+          <option name="type" value="Multiple" />
+        </CustomGeneratorSettings>
+      </list>
+    </option>
+  </component>
+</project>
