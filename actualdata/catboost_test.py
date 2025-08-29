@@ -47,7 +47,9 @@ def objective(trial):
         'one_hot_max_size': trial.suggest_int('one_hot_max_size', 2, 25),
         'loss_function': 'RMSE',
         'verbose': 0,
-        'random_seed': 42
+        'random_seed': 42,
+        'task_type': 'GPU',  # ⚡️ ключевая правка
+        'devices': '0'
     }
 
     pool = Pool(X_train, y_train, cat_features=cat_features)
@@ -71,7 +73,12 @@ print(study.best_params)
 # Финальная модель с лучшими параметрами
 # ----------------------
 best_params = study.best_params
-model = CatBoostRegressor(**best_params, verbose=100)
+model = CatBoostRegressor(
+    **best_params,
+    task_type="GPU",  # ⚡️ здесь тоже
+    devices='0',
+    verbose=100
+)
 model.fit(X_train, y_train, cat_features=cat_features)
 
 # ----------------------
