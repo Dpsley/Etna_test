@@ -3,7 +3,7 @@ import json
 import os
 
 # Загрузка CSV
-df = pd.read_csv("/mnt/d/OSPanel/domains/Etna_test/actualdata/sales_full.csv",
+df = pd.read_csv("sales_full_fixed.csv",
                  sep=',', dayfirst=True, parse_dates=['Date'])
 
 # Парсинг JSON ProductProperties

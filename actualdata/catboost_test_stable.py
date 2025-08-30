@@ -1,7 +1,7 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 from catboost import CatBoostRegressor, Pool, cv
-from sklearn.metrics import mean_absolute_error, mean_squared_error, mean_absolute_percentage_error
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 import optuna
 import os
 
@@ -88,8 +88,6 @@ y_pred = model.predict(X_test)
 print("MAE:", mean_absolute_error(y_test, y_pred))
 print("RMSE:", mean_squared_error(y_test, y_pred)**0.5)
 print("R2:", model.score(X_test, y_test))
-print("MAPE:", mean_absolute_percentage_error(y_test, y_pred))
-print("Accuracy (1 - MAPE):", 1 - mean_absolute_percentage_error(y_test, y_pred))
 
 # ----------------------
 # Сохраняем predictions
