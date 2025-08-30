@@ -3,3 +3,6 @@ actualdata/sales_short.csv
 actualdata/expanded.csv
 actualdata/sales_full.csv
 actualdata/expanded.csv
+actualdata/catboost_info
+actualdata/plots
+actualdata/catboost_model.cbm

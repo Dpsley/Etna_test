@@ -1,7 +1,7 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 from catboost import CatBoostRegressor, Pool, cv
-from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.metrics import mean_absolute_error, mean_squared_error, mean_absolute_percentage_error
 import optuna
 import os
 
@@ -47,7 +47,9 @@ def objective(trial):
         'one_hot_max_size': trial.suggest_int('one_hot_max_size', 2, 25),
         'loss_function': 'RMSE',
         'verbose': 0,
-        'random_seed': 42
+        'random_seed': 42,
+#        'task_type': 'GPU',  # ⚡️ ключевая правка
+#        'devices': '0'
     }
 
     pool = Pool(X_train, y_train, cat_features=cat_features)
@@ -62,7 +64,7 @@ def objective(trial):
     return cv_data['test-RMSE-mean'].min()
 
 study = optuna.create_study(direction='minimize')
-study.optimize(objective, n_trials=30)
+study.optimize(objective, n_trials=1000)
 
 print("✅ Оптимальные параметры:")
 print(study.best_params)
@@ -71,7 +73,12 @@ print(study.best_params)
 # Финальная модель с лучшими параметрами
 # ----------------------
 best_params = study.best_params
-model = CatBoostRegressor(**best_params, verbose=100)
+model = CatBoostRegressor(
+    **best_params,
+#    task_type="GPU",  # ⚡️ здесь тоже
+#    devices='0',
+    verbose=100
+)
 model.fit(X_train, y_train, cat_features=cat_features)
 
 # ----------------------
@@ -81,6 +88,8 @@ y_pred = model.predict(X_test)
 print("MAE:", mean_absolute_error(y_test, y_pred))
 print("RMSE:", mean_squared_error(y_test, y_pred)**0.5)
 print("R2:", model.score(X_test, y_test))
+print("MAPE:", mean_absolute_percentage_error(y_test, y_pred))
+print("Accuracy (1 - MAPE):", 1 - mean_absolute_percentage_error(y_test, y_pred))
 
 # ----------------------
 # Сохраняем predictions
