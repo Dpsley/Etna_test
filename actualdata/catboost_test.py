@@ -89,8 +89,13 @@ model = CatBoostRegressor(
     #devices='0',
     verbose=100
 )
-model.fit(X_train, y_train, cat_features=cat_features)
-
+model.fit(
+    X_train, y_train,
+    cat_features=cat_features,
+    eval_set=(X_test, y_test),  # КРИТИЧЕСКИ ВАЖНО
+    early_stopping_rounds=100,  # Увеличить с 70 до 100+
+    use_best_model=True         # Сохранять лучшую итерацию
+)
 # ----------------------
 # Прогноз и метрики
 # ----------------------
