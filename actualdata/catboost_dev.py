@@ -2,7 +2,7 @@ import re
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from catboost import CatBoostRegressor, Pool, cv
+from catboost import CatBoostRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 import optuna
 from optuna.samplers import TPESampler
@@ -43,7 +43,18 @@ X_train_all, y_train_all = train[features], train[target]
 X_test, y_test = test[features], test[target]
 
 # ----------------------
-# Оптимизация (Optuna) — умеренно trials + pruner + seed
+# Split train_inner / val_inner (для Optuna)
+# ----------------------
+train_sorted = train.sort_values("Date")
+val_cut = int(len(train_sorted) * 0.8)
+train_inner = train_sorted.iloc[:val_cut]
+val_inner   = train_sorted.iloc[val_cut:]
+
+X_tr, y_tr = train_inner[features], train_inner[target]
+X_val, y_val = val_inner[features], val_inner[target]
+
+# ----------------------
+# Оптимизация (Optuna)
 # ----------------------
 def objective(trial):
     params = {
@@ -56,88 +67,76 @@ def objective(trial):
         'border_count': trial.suggest_int('border_count', 32, 128),
         'one_hot_max_size': trial.suggest_int('one_hot_max_size', 2, 10),
         'loss_function': 'RMSE',
+        'task_type': 'GPU',
+        'devices': '0',
         'verbose': 0,
-        'random_seed': 42,
-        'task_type': 'GPU'  # включи если есть GPU-версия CatBoost
+        'random_seed': 42
     }
 
-    pool = Pool(X_train_all, y_train_all, cat_features=cat_features)
-
-    try:
-        cv_data = cv(
-            params=params,
-            pool=pool,
-            fold_count=4,
-            partition_random_seed=42,
-            verbose=False
-        )
-        # cv_data обычно DataFrame-like, колонка 'test-RMSE-mean'
-        return float(cv_data['test-RMSE-mean'].min())
-    except Exception as e:
-        # если cv упал — penalize
-        print("CV error:", e)
-        return 1e6
+    model = CatBoostRegressor(**params)
+    model.fit(
+        X_tr, y_tr,
+        eval_set=(X_val, y_val),
+        cat_features=cat_features,
+        use_best_model=True,
+        early_stopping_rounds=50,
+        verbose=False
+    )
+    y_val_pred = model.predict(X_val)
+    rmse = mean_squared_error(y_val, y_val_pred)
+    return rmse
 
 study = optuna.create_study(
     direction='minimize',
     sampler=TPESampler(seed=42),
     pruner=MedianPruner(n_startup_trials=5)
 )
-study.optimize(objective, n_trials=80)  # уменьшил trials до разумных 80
+study.optimize(objective, n_trials=80)
 
 print("✅ Best params:", study.best_params)
 
 # ----------------------
-# Финальное обучение: возьмём train -> train_inner / val_inner для early stopping
+# Финальное обучение на train_inner + val_inner
 # ----------------------
-# Split last 20% of train by date as validation
-train_sorted = train.sort_values("Date")
-val_cut = int(len(train_sorted) * 0.8)
-train_inner = train_sorted.iloc[:val_cut]
-val_inner   = train_sorted.iloc[val_cut:]
-
-X_tr, y_tr = train_inner[features], train_inner[target]
-X_val, y_val = val_inner[features], val_inner[target]
-
 best_params = study.best_params.copy()
-# safety defaults
 best_params.setdefault('iterations', 1000)
 best_params.setdefault('loss_function', 'RMSE')
-best_params['verbose'] = 100
-best_params['random_seed'] = 42
-# добавим odopt
-best_params['od_type'] = 'Iter'
-best_params['od_wait'] = 50
+best_params.update({
+    'verbose': 100,
+    'random_seed': 42,
+    'od_type': 'Iter',
+    'od_wait': 50,
+    'task_type': 'GPU',
+    'devices': '0'
+})
 
-model = CatBoostRegressor(**best_params)
-model.fit(
+final_model = CatBoostRegressor(**best_params)
+final_model.fit(
     X_tr, y_tr,
-    cat_features=cat_features,
     eval_set=(X_val, y_val),
+    cat_features=cat_features,
     use_best_model=True,
     early_stopping_rounds=50
 )
 
 # ----------------------
-# Predict & metrics (защита от нулей в y_true)
+# Predict & metrics
 # ----------------------
-y_pred = model.predict(X_test)
+y_pred = final_model.predict(X_test)
 
 mae = mean_absolute_error(y_test, y_pred)
-rmse = mean_squared_error(y_test, y_pred, squared=False)
-
-# безопасный MAPE:
+rmse = mean_squared_error(y_test, y_pred)
 eps = 1e-8
 mape = np.mean(np.abs((y_test.values - y_pred) / np.maximum(eps, y_test.values)))
 
 print("MAE:", mae)
 print("RMSE:", rmse)
-print("R2 (train on whole train not test):", model.score(X_test, y_test))
+print("R2:", final_model.score(X_test, y_test))
 print("MAPE (safe):", mape)
 print("Accuracy (1 - MAPE):", 1 - mape)
 
 # ----------------------
-# Save predictions (clip negatives, safe rounding)
+# Save predictions
 # ----------------------
 pred_df = test[["Department","Article","ProductName","Date"]].copy()
 pred_df["Actual"] = y_test.values
@@ -148,11 +147,11 @@ print("✅ predictions.csv saved")
 # ----------------------
 # Save model
 # ----------------------
-model.save_model("catboost_model.cbm")
+final_model.save_model("catboost_model.cbm")
 print("✅ model saved")
 
 # ----------------------
-# Plots (sanitize filenames, skip tiny groups)
+# Plots
 # ----------------------
 os.makedirs("plots", exist_ok=True)
 
