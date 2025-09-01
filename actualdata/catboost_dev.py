@@ -1,180 +1,168 @@
-import re
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from catboost import CatBoostRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.model_selection import TimeSeriesSplit
 import optuna
-from optuna.samplers import TPESampler
-from optuna.pruners import MedianPruner
 import os
+from collections import deque
 
 # ----------------------
-# Load
+# Параметры
 # ----------------------
-df = pd.read_csv('expanded.csv', sep=';', parse_dates=['Date'], dayfirst=False)
-
-# ----------------------
-# Features / target
-# ----------------------
-features = [
-    "Department",   # categorical
+ARTICLE = "TALTHB-DP0031"
+SPLIT_DATE = "2025-07-20"
+N_FUTURE_DAYS = 30
+FEATURES = [
+    "Department",
     "sold_lag1", "sold_lag7", "sold_ma7", "sold_ma14",
     "stock_diff", "restock_flag", "days_since_last_restock",
     "Reserve", "Available",
     "day_of_week", "is_weekend", "month"
 ]
-cat_features = ["Department"]
-target = "Sold"
+CAT_FEATURES = ["Department"]
+TARGET = "Sold"
 
 # ----------------------
-# Train / test by date
+# Загружаем данные
 # ----------------------
-split_date = "2025-07-20"
-train = df[df["Date"] <= split_date].copy()
-test  = df[df["Date"] >  split_date].copy()
-
-if train.empty:
-    raise SystemExit(f"Train is empty, check split date {split_date}")
-if test.empty:
-    print("WARN: test is empty — ничего прогнозить не на что")
-
-X_train_all, y_train_all = train[features], train[target]
-X_test, y_test = test[features], test[target]
+df = pd.read_csv('expanded.csv', sep=';', parse_dates=['Date'], dayfirst=False)
 
 # ----------------------
-# Split train_inner / val_inner (для Optuna)
+# Фильтруем по артикулу
 # ----------------------
-train_sorted = train.sort_values("Date")
-val_cut = int(len(train_sorted) * 0.8)
-train_inner = train_sorted.iloc[:val_cut]
-val_inner   = train_sorted.iloc[val_cut:]
-
-X_tr, y_tr = train_inner[features], train_inner[target]
-X_val, y_val = val_inner[features], val_inner[target]
+df = df[df["Article"] == ARTICLE].copy()
+if df.empty:
+    raise SystemExit(f"Нет данных для Article={ARTICLE}")
 
 # ----------------------
-# Оптимизация (Optuna)
+# Train/Test split
+# ----------------------
+train = df[df["Date"] <= SPLIT_DATE].sort_values("Date")
+test  = df[df["Date"] >  SPLIT_DATE].sort_values("Date")
+
+X_train, y_train = train[FEATURES], train[TARGET]
+X_test, y_test   = test[FEATURES], test[TARGET]
+
+# ----------------------
+# Optuna: оптимизация параметров
 # ----------------------
 def objective(trial):
     params = {
-        'iterations': trial.suggest_int('iterations', 500, 2000),
-        'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.1, log=True),
-        'depth': trial.suggest_int('depth', 4, 12),
-        'l2_leaf_reg': trial.suggest_float('l2_leaf_reg', 0.1, 10.0, log=True),
-        'random_strength': trial.suggest_float('random_strength', 0.1, 10.0),
-        'bagging_temperature': trial.suggest_float('bagging_temperature', 0, 3.0),
-        'border_count': trial.suggest_int('border_count', 32, 128),
-        'one_hot_max_size': trial.suggest_int('one_hot_max_size', 2, 10),
+        'iterations': trial.suggest_int('iterations', 500, 3000),
+        'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.6, log=True),
+        'depth': trial.suggest_int('depth', 4, 16),
+        'l2_leaf_reg': trial.suggest_float('l2_leaf_reg', 0.01, 10.0, log=True),
+        'random_strength': trial.suggest_float('random_strength', 0.1, 20.0),
+        'bagging_temperature': trial.suggest_float('bagging_temperature', 0, 5.0),
+        'border_count': trial.suggest_int('border_count', 32, 512),
+        'one_hot_max_size': trial.suggest_int('one_hot_max_size', 2, 25),
         'loss_function': 'RMSE',
-        'task_type': 'GPU',
-        'devices': '0',
-        'verbose': 0,
-        'random_seed': 42
+        'random_seed': 42,
+        'verbose': 0
     }
 
-    model = CatBoostRegressor(**params)
-    model.fit(
-        X_tr, y_tr,
-        eval_set=(X_val, y_val),
-        cat_features=cat_features,
-        use_best_model=True,
-        early_stopping_rounds=50,
-        verbose=False
-    )
-    y_val_pred = model.predict(X_val)
-    rmse = mean_squared_error(y_val, y_val_pred)
-    return rmse
+    tscv = TimeSeriesSplit(n_splits=5)
+    rmse_scores = []
 
-study = optuna.create_study(
-    direction='minimize',
-    sampler=TPESampler(seed=42),
-    pruner=MedianPruner(n_startup_trials=5)
-)
-study.optimize(objective, n_trials=80)
+    for train_idx, val_idx in tscv.split(X_train):
+        X_tr, X_val = X_train.iloc[train_idx], X_train.iloc[val_idx]
+        y_tr, y_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
 
-print("✅ Best params:", study.best_params)
+        model = CatBoostRegressor(**params, task_type='GPU', devices='0')
+        model.fit(
+            X_tr, y_tr,
+            cat_features=CAT_FEATURES,
+            eval_set=(X_val, y_val),
+            early_stopping_rounds=50,
+            verbose=100
+        )
+        rmse_scores.append(mean_squared_error(y_val, model.predict(X_val))**0.5)
+
+    return np.mean(rmse_scores)
+
+study = optuna.create_study(direction='minimize')
+study.optimize(objective, n_trials=50, show_progress_bar=True)
+
+print("✅ Оптимальные параметры:")
+print(study.best_params)
 
 # ----------------------
-# Финальное обучение на train_inner + val_inner
+# Финальная модель с лучшими параметрами
 # ----------------------
-best_params = study.best_params.copy()
-best_params.setdefault('iterations', 1000)
-best_params.setdefault('loss_function', 'RMSE')
-best_params.update({
-    'verbose': 100,
-    'random_seed': 42,
-    'od_type': 'Iter',
-    'od_wait': 50,
-    'task_type': 'GPU',
-    'devices': '0'
+best_params = study.best_params
+model = CatBoostRegressor(**best_params, verbose=100)
+model.fit(X_train, y_train, cat_features=CAT_FEATURES, eval_set=(X_test, y_test), early_stopping_rounds=100, use_best_model=True)
+
+# ----------------------
+# Прогноз на тест + N_FUTURE_DAYS
+# ----------------------
+all_dates = pd.concat([
+    test["Date"],
+    pd.Series(pd.date_range(start=test["Date"].max() + pd.Timedelta(days=1), periods=N_FUTURE_DAYS))
+]).reset_index(drop=True)
+
+last_row = train.iloc[-1].copy()
+preds = []
+
+lag1 = last_row["sold_lag1"]
+lag7_window = deque([last_row["sold_lag7"]] + [lag1]*6, maxlen=7)
+ma7_window = deque([last_row["sold_ma7"]]*7, maxlen=7)
+ma14_window = deque([last_row["sold_ma14"]]*14, maxlen=14)
+available_stock = last_row["Available"]
+
+for date in all_dates:
+    if last_row["restock_flag"] == 1:
+        available_stock += last_row["stock_diff"]
+
+    X_pred = last_row[FEATURES].to_frame().T
+    X_pred["Available"] = available_stock
+
+    y_hat = model.predict(X_pred)[0]
+    y_hat = min(y_hat, available_stock)
+    preds.append(y_hat)
+
+    available_stock -= y_hat
+    if available_stock < 0: available_stock = 0
+
+    lag1 = y_hat
+    lag7_window.append(y_hat)
+    ma7_window.append(y_hat)
+    ma14_window.append(y_hat)
+
+    last_row["sold_lag1"] = lag1
+    last_row["sold_lag7"] = lag7_window[0]
+    last_row["sold_ma7"] = np.mean(ma7_window)
+    last_row["sold_ma14"] = np.mean(ma14_window)
+    last_row["Available"] = available_stock
+
+    last_row["Date"] = date
+    last_row["day_of_week"] = last_row["Date"].weekday()
+    last_row["is_weekend"] = int(last_row["day_of_week"] >= 5)
+    last_row["month"] = last_row["Date"].month
+
+forecast_df = pd.DataFrame({
+    "Date": all_dates,
+    "Predicted": np.round(preds).astype(int)
 })
-
-final_model = CatBoostRegressor(**best_params)
-final_model.fit(
-    X_tr, y_tr,
-    eval_set=(X_val, y_val),
-    cat_features=cat_features,
-    use_best_model=True,
-    early_stopping_rounds=50
-)
+forecast_df.to_csv(f"forecast_{ARTICLE}_stock.csv", sep=";", index=False)
+print(f"✅ Forecast saved to forecast_{ARTICLE}_stock.csv")
 
 # ----------------------
-# Predict & metrics
+# График
 # ----------------------
-y_pred = final_model.predict(X_test)
-
-mae = mean_absolute_error(y_test, y_pred)
-rmse = mean_squared_error(y_test, y_pred)
-eps = 1e-8
-mape = np.mean(np.abs((y_test.values - y_pred) / np.maximum(eps, y_test.values)))
-
-print("MAE:", mae)
-print("RMSE:", rmse)
-print("R2:", final_model.score(X_test, y_test))
-print("MAPE (safe):", mape)
-print("Accuracy (1 - MAPE):", 1 - mape)
-
-# ----------------------
-# Save predictions
-# ----------------------
-pred_df = test[["Department","Article","ProductName","Date"]].copy()
-pred_df["Actual"] = y_test.values
-pred_df["Predicted"] = np.clip(np.round(y_pred), 0, None).astype(int)
-pred_df.to_csv("predictions.csv", sep=";", index=False)
-print("✅ predictions.csv saved")
-
-# ----------------------
-# Save model
-# ----------------------
-final_model.save_model("catboost_model.cbm")
-print("✅ model saved")
-
-# ----------------------
-# Plots
-# ----------------------
+plt.figure(figsize=(10, 5))
+plt.plot(test["Date"], test["Sold"], marker="o", label="Факт (тест)")
+plt.plot(forecast_df["Date"], forecast_df["Predicted"], marker="x", label="Прогноз")
+plt.title(f"Прогноз продаж {ARTICLE} с учетом остатков")
+plt.xlabel("Дата")
+plt.ylabel("Продажи")
+plt.legend()
+plt.grid(True)
+plt.xticks(rotation=45)
+plt.tight_layout()
 os.makedirs("plots", exist_ok=True)
-
-def safe_fname(s):
-    s = str(s)
-    s = re.sub(r'[^0-9a-zA-Z\-_.]+', '_', s)
-    return s[:120]
-
-for (dept, article, name), grp in pred_df.groupby(["Department","Article","ProductName"]):
-    if len(grp) < 2:
-        continue
-    plt.figure(figsize=(10, 5))
-    plt.plot(grp["Date"], grp["Actual"], marker="o", label="Факт")
-    plt.plot(grp["Date"], grp["Predicted"], marker="x", label="Прогноз")
-    plt.title(f"{name} ({article}) [{dept}]")
-    plt.xlabel("Дата")
-    plt.ylabel("Продажи")
-    plt.legend()
-    plt.grid(True)
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    fname = f"plots/{safe_fname(dept)}_{safe_fname(article)}.png"
-    plt.savefig(fname, bbox_inches='tight')
-    plt.close()
-
-print("✅ PNGs saved to plots/")
+plt.savefig(f"plots/forecast_{ARTICLE}_stock.png")
+plt.close()
+print("✅ PNG saved")

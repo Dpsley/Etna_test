@@ -1,42 +1,85 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from catboost import CatBoostRegressor, Pool, cv
-from sklearn.metrics import mean_absolute_error, mean_squared_error
+from catboost import CatBoostRegressor
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.model_selection import TimeSeriesSplit
 import optuna
 import os
-
-from sklearn.model_selection import TimeSeriesSplit
 
 # ----------------------
 # Загружаем данные
 # ----------------------
-df = pd.read_csv('expanded.csv', sep=';', parse_dates=['Date'], dayfirst=False)
+df = pd.read_csv(
+    'by_department/expanded_TALTHB-DP0031_АТ Москва.csv',
+    sep=';',
+    parse_dates=['Date'],
+    dayfirst=False
+)
+
+# ----------------------
+# Лаги и скользящие средние
+# ----------------------
+lag_days = [1,2,3,7,14,21,28,60,90]
+for lag in lag_days:
+    df[f'sold_lag{lag}'] = df['Sold'].shift(lag).fillna(0)
+
+ma_windows = [3,7,14,21,28,60,90]
+for w in ma_windows:
+    df[f'sold_ma{w}'] = df['Sold'].rolling(w).mean().fillna(0)
+    df[f'sold_median{w}'] = df['Sold'].rolling(w).median().fillna(0)
+
+# бинарные признаки
+df['sold_last_day_binary']   = (df['sold_lag1']  > 0).astype(int)
+df['sold_last_week_binary']  = (df['sold_lag7']  > 0).astype(int)
+df['sold_last_month_binary'] = (df['sold_lag28'] > 0).astype(int)
+
+# ----------------------
+# Новые признаки
+# ----------------------
+# Кроссы товаров
+df["brand_region"] = df["Марка"].astype(str) + "_" + df["Регион"].astype(str)
+df["type_flavor"]  = df["Тип"].astype(str)   + "_" + df["Вкус"].astype(str)
+
+# Календарные признаки
+df["quarter"] = df["Date"].dt.quarter
+df["is_start_of_month"] = (df["day"] <= 3).astype(int)
+df["is_end_of_month"]   = (df["day"] >= 27).astype(int)
 
 # ----------------------
 # Фичи и таргет
 # ----------------------
-features = [
-    "Department",   # категориальная
-    "sold_lag1", "sold_lag7", "sold_ma7", "sold_ma14",
-    "stock_diff", "restock_flag", "days_since_last_restock",
-    "Reserve", "Available",
-    "day_of_week", "is_weekend", "month"
+product_features = [
+    "ProductGroup","ProductType","Вид","Регион","Тип",
+    "Марка","Код производителя","Вкус","Ароматизированный",
+    "brand_region","type_flavor"
 ]
-cat_features = ["Department"]
+
+features = product_features + [
+    "Department",
+    *[f'sold_lag{l}' for l in lag_days],
+    *[f'sold_ma{w}' for w in ma_windows],
+    *[f'sold_median{w}' for w in ma_windows],
+    "stock_diff","restock_flag","days_since_last_restock",
+    "Reserve","Available",
+    "sold_last_day_binary","sold_last_week_binary","sold_last_month_binary",
+    "day_of_week","is_weekend","month","day",
+    "quarter","is_start_of_month","is_end_of_month"
+]
+cat_features = ["Department"] + product_features
 target = "Sold"
 
 # ----------------------
-# Train/Test по дате
+# Train/Test
 # ----------------------
-train = df[df["Date"] <= "2025-07-20"]
-test  = df[df["Date"] >  "2025-07-20"]
+train = df[df["Date"] <= "2025-06-30"]
+test  = df[df["Date"] >  "2025-06-30"]
 
-X_train, y_train = train[features], train[target]
-X_test, y_test   = test[features],  test[target]
+X_train, y_train = train[features], np.log1p(train[target])  # лог-таргет
+X_test,  y_test  = test[features],  test[target]
 
 # ----------------------
-# Optuna: оптимизация параметров
+# Optuna оптимизация
 # ----------------------
 def objective(trial):
     params = {
@@ -49,60 +92,55 @@ def objective(trial):
         'border_count': trial.suggest_int('border_count', 32, 512),
         'one_hot_max_size': trial.suggest_int('one_hot_max_size', 2, 25),
         'loss_function': 'RMSE',
-        'random_seed': 42,
-        #'task_type': 'GPU',  # ⚡️ ключевая правка
-        #'devices': '0'
+        'random_seed': 42
     }
 
-    tscv = TimeSeriesSplit(n_splits=10)
+    tscv = TimeSeriesSplit(n_splits=5)
     rmse_scores = []
 
     for train_idx, val_idx in tscv.split(X_train):
         X_tr, X_val = X_train.iloc[train_idx], X_train.iloc[val_idx]
         y_tr, y_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
 
-        model = CatBoostRegressor(**params,verbose=1)
+        model = CatBoostRegressor(**params)
         model.fit(
             X_tr, y_tr,
             cat_features=cat_features,
             eval_set=(X_val, y_val),
-            early_stopping_rounds=70,
+            early_stopping_rounds=200,
             verbose=100
         )
-        rmse_scores.append(mean_squared_error(y_val, model.predict(X_val)) ** 0.5)
+        preds = model.predict(X_val)
+        rmse_scores.append(mean_squared_error(y_val, preds))
 
     return np.mean(rmse_scores)
 
 study = optuna.create_study(direction='minimize')
-study.optimize(objective, n_trials=200, show_progress_bar=True)
-
-print("✅ Оптимальные параметры:")
-print(study.best_params)
-
-# ----------------------
-# Финальная модель с лучшими параметрами
-# ----------------------
+study.optimize(objective, n_trials=50, show_progress_bar=True)
 best_params = study.best_params
-model = CatBoostRegressor(
-    **best_params,
-    #task_type="GPU",  # ⚡️ здесь тоже
-    #devices='0',
-    verbose=100
-)
+print("✅ Оптимальные параметры:", best_params)
+
+# ----------------------
+# Финальная модель
+# ----------------------
+model = CatBoostRegressor(**best_params, verbose=100)
 model.fit(
     X_train, y_train,
     cat_features=cat_features,
-    eval_set=(X_test, y_test),  # КРИТИЧЕСКИ ВАЖНО
-    early_stopping_rounds=100,  # Увеличить с 70 до 100+
-    use_best_model=True         # Сохранять лучшую итерацию
+    eval_set=(X_test, np.log1p(y_test)),
+    early_stopping_rounds=200,
+    use_best_model=True
 )
+
 # ----------------------
 # Прогноз и метрики
 # ----------------------
-y_pred = model.predict(X_test)
+y_pred_log = model.predict(X_test)
+y_pred = np.expm1(y_pred_log)  # обратно в Sold
+
 print("MAE:", mean_absolute_error(y_test, y_pred))
-print("RMSE:", mean_squared_error(y_test, y_pred)**0.5)
-print("R2:", model.score(X_test, y_test))
+print("RMSE:", mean_squared_error(y_test, y_pred))
+print("R2:", r2_score(y_test, y_pred))
 
 # ----------------------
 # Сохраняем predictions
@@ -120,11 +158,9 @@ model.save_model("catboost_model.cbm")
 print("✅ модель сохранена в catboost_model.cbm")
 
 # ----------------------
-# Директория для графиков
+# Графики
 # ----------------------
 os.makedirs("plots", exist_ok=True)
-
-# Графики по Department + Article + ProductName
 for (dept, article, name), grp in pred_df.groupby(["Department","Article","ProductName"]):
     plt.figure(figsize=(10, 5))
     plt.plot(grp["Date"], grp["Actual"], marker="o", label="Факт")
