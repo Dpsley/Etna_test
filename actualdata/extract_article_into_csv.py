@@ -16,8 +16,6 @@ df_filtered = df[df["Article"] == ARTICLE].copy()
 if df_filtered.empty:
     print(f"⚠️ Нет данных для Article={ARTICLE}")
 else:
-    # Проходим по каждому Department
-    for dept, grp in df_filtered.groupby("Department"):
-        filename = f"{OUTPUT_DIR}/expanded_{ARTICLE}_{dept}.csv"
-        grp.to_csv(filename, sep=";", index=False)
-        print(f"✅ Сохранено {len(grp)} строк в {filename}")
+    filename = f"{OUTPUT_DIR}/expanded_{ARTICLE}.csv"
+    df_filtered.to_csv(filename, sep=";", index=False)
+    print(f"✅ Сохранено {len(df_filtered)} строк в {filename}")

@@ -8,17 +8,27 @@ import optuna
 import os
 
 # ----------------------
+# safe MAPE
+# ----------------------
+def safe_mape(y_true, y_pred):
+    y_true, y_pred = np.array(y_true), np.array(y_pred)
+    non_zero = y_true != 0
+    if not non_zero.any():
+        return float("inf")
+    return np.mean(np.abs((y_true[non_zero] - y_pred[non_zero]) / y_true[non_zero])) * 100
+
+# ----------------------
 # Загружаем данные
 # ----------------------
 df = pd.read_csv(
-    'by_department/expanded_TALTHB-DP0031_АТ Москва.csv',
+    'by_department/expanded_TALTHB-DP0031.csv',
     sep=';',
     parse_dates=['Date'],
     dayfirst=False
 )
 
 # ----------------------
-# Лаги и скользящие средние
+# Лаги и скользящие
 # ----------------------
 lag_days = [1,2,3,7,14,21,28,60,90]
 for lag in lag_days:
@@ -29,6 +39,10 @@ for w in ma_windows:
     df[f'sold_ma{w}'] = df['Sold'].rolling(w).mean().fillna(0)
     df[f'sold_median{w}'] = df['Sold'].rolling(w).median().fillna(0)
 
+# новые фичи: волатильность
+df["sold_std7"] = df["Sold"].rolling(7).std().fillna(0)
+df["sold_std30"] = df["Sold"].rolling(30).std().fillna(0)
+
 # бинарные признаки
 df['sold_last_day_binary']   = (df['sold_lag1']  > 0).astype(int)
 df['sold_last_week_binary']  = (df['sold_lag7']  > 0).astype(int)
@@ -37,14 +51,12 @@ df['sold_last_month_binary'] = (df['sold_lag28'] > 0).astype(int)
 # ----------------------
 # Новые признаки
 # ----------------------
-# Кроссы товаров
 df["brand_region"] = df["Марка"].astype(str) + "_" + df["Регион"].astype(str)
 df["type_flavor"]  = df["Тип"].astype(str)   + "_" + df["Вкус"].astype(str)
 
-# Календарные признаки
 df["quarter"] = df["Date"].dt.quarter
-df["is_start_of_month"] = (df["day"] <= 3).astype(int)
-df["is_end_of_month"]   = (df["day"] >= 27).astype(int)
+df["is_start_of_month"] = (df["Date"].dt.day <= 3).astype(int)
+df["is_end_of_month"]   = (df["Date"].dt.day >= 27).astype(int)
 
 # ----------------------
 # Фичи и таргет
@@ -60,6 +72,7 @@ features = product_features + [
     *[f'sold_lag{l}' for l in lag_days],
     *[f'sold_ma{w}' for w in ma_windows],
     *[f'sold_median{w}' for w in ma_windows],
+    "sold_std7","sold_std30",
     "stock_diff","restock_flag","days_since_last_restock",
     "Reserve","Available",
     "sold_last_day_binary","sold_last_week_binary","sold_last_month_binary",
@@ -75,8 +88,8 @@ target = "Sold"
 train = df[df["Date"] <= "2025-06-30"]
 test  = df[df["Date"] >  "2025-06-30"]
 
-X_train, y_train = train[features], np.log1p(train[target])  # лог-таргет
-X_test,  y_test  = test[features],  test[target]
+X_train, y_train = train[features], np.log1p(train[target])
+X_test,  y_test  = test[features], test[target]
 
 # ----------------------
 # Optuna оптимизация
@@ -136,11 +149,19 @@ model.fit(
 # Прогноз и метрики
 # ----------------------
 y_pred_log = model.predict(X_test)
-y_pred = np.expm1(y_pred_log)  # обратно в Sold
+y_pred = np.expm1(y_pred_log)
 
-print("MAE:", mean_absolute_error(y_test, y_pred))
-print("RMSE:", mean_squared_error(y_test, y_pred))
-print("R2:", r2_score(y_test, y_pred))
+mae = mean_absolute_error(y_test, y_pred)
+rmse = mean_squared_error(y_test, y_pred)
+mape = safe_mape(y_test, y_pred)
+r2 = r2_score(y_test, y_pred)
+
+print("="*40)
+print(f"MAE:   {mae:.2f}")
+print(f"RMSE:  {rmse:.2f}")
+print(f"MAPE:  {mape:.2f}%")
+print(f"R2:    {r2:.4f}")
+print("="*40)
 
 # ----------------------
 # Сохраняем predictions
@@ -165,6 +186,12 @@ for (dept, article, name), grp in pred_df.groupby(["Department","Article","Produ
     plt.figure(figsize=(10, 5))
     plt.plot(grp["Date"], grp["Actual"], marker="o", label="Факт")
     plt.plot(grp["Date"], grp["Predicted"], marker="x", label="Прогноз")
+    plt.fill_between(
+        grp["Date"],
+        grp["Predicted"]*0.9,
+        grp["Predicted"]*1.1,
+        color="gray", alpha=0.2, label="±10%"
+    )
     plt.title(f"{name} ({article}) [{dept}]")
     plt.xlabel("Дата")
     plt.ylabel("Продажи")
