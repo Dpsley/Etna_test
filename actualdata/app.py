@@ -1,55 +1,69 @@
-from flask import Flask, request, jsonify
 import pandas as pd
 import numpy as np
+from flask import Flask, request, jsonify
+import joblib
 from catboost import CatBoostRegressor
 
 app = Flask(__name__)
 
-# Загружаем модель
+# Загрузка модели
 model = CatBoostRegressor()
 model.load_model("catboost_model.cbm")
+# Загружаем исходную историю
+history_df = pd.read_csv("expanded.csv", sep=";", parse_dates=['Date'])
 
-# Те же списки фич, что и в обучении
-product_features = [
-    "ProductGroup","ProductType","Вид","Регион","Тип",
-    "Марка","Код производителя","Вкус","Ароматизированный",
-    "brand_region","type_flavor"
+# Список фичей для модели
+features = [
+    "sold_lag1", "sold_lag2", "sold_lag3", "sold_ma3", "sold_median7", "sold_std30",
+    "day_of_week", "is_weekend", "month", "day", "quarter", "is_start_of_month",
+    "is_end_of_month", "brand_region", "type_flavor"
 ]
-lag_days = [1,2,3,7,14,21,28,60,90]
-ma_windows = [3,7,14,21,28,60,90]
 
-features = product_features + [
-    "Department",
-    *[f'sold_lag{l}' for l in lag_days],
-    *[f'sold_ma{w}' for w in ma_windows],
-    *[f'sold_median{w}' for w in ma_windows],
-    "sold_std7","sold_std30",
-    "stock_diff","restock_flag","days_since_last_restock",
-    "Reserve","Available",
-    "sold_last_day_binary","sold_last_week_binary","sold_last_month_binary",
-    "day_of_week","is_weekend","month","day",
-    "quarter","is_start_of_month","is_end_of_month"
-]
-cat_features = ["Department"] + product_features
-
-# Загружаем справочник с последними значениями по товарам
-products_df = pd.read_csv("expanded.csv", sep=";")
+def compute_features(g):
+    # лаги
+    sold = g["Sold"].tolist()
+    return pd.DataFrame({
+        "sold_lag1": [sold[-1] if len(sold) >= 1 else 0],
+        "sold_lag2": [sold[-2] if len(sold) >= 2 else 0],
+        "sold_lag3": [sold[-3] if len(sold) >= 3 else 0],
+        "sold_ma3": [np.mean(sold[-3:]) if len(sold) >= 1 else 0],
+        "sold_median7": [np.median(sold[-7:]) if len(sold) >= 1 else 0],
+        "sold_std30": [np.std(sold[-30:]) if len(sold) >= 1 else 0]
+    })
 
 @app.route("/predict", methods=["POST"])
 def predict():
-    data = request.json
-    if "start_date" not in data or "end_date" not in data:
-        return jsonify({"error": "start_date and end_date required"}), 400
+    global history_df
 
+    data = request.json
     start_date = pd.to_datetime(data["start_date"])
     end_date = pd.to_datetime(data["end_date"])
-    dates = pd.date_range(start=start_date, end=end_date)
 
     results = []
-    for date in dates:
-        df_date = products_df.copy()
 
-        # Дата-фичи
+    for date in pd.date_range(start_date, end_date):
+        df_date = history_df.groupby(['Department','Article'], group_keys=False).apply(
+            lambda g: pd.DataFrame({
+                "Department": g["Department"].iloc[-1],
+                "Article": g["Article"].iloc[-1],
+                "ProductName": g["ProductName"].iloc[-1],
+                "ProductGroup": g["ProductGroup"].iloc[-1],
+                "ProductType": g["ProductType"].iloc[-1],
+                "Вид": g["Вид"].iloc[-1],
+                "Регион": g["Регион"].iloc[-1],
+                "Тип": g["Тип"].iloc[-1],
+                "Марка": g["Марка"].iloc[-1],
+                "Код производителя": g["Код производителя"].iloc[-1],
+                "Вкус": g["Вкус"].iloc[-1],
+                "Ароматизированный": g["Ароматизированный"].iloc[-1],
+            }, index=[0])
+        ).reset_index(drop=True)
+
+        # добавляем лаги и скользящие
+        lag_features = history_df.groupby(['Department','Article'], group_keys=False).apply(compute_features).reset_index(drop=True)
+        df_date = pd.concat([df_date.reset_index(drop=True), lag_features], axis=1)
+
+        # календарные признаки
         df_date["day_of_week"] = date.dayofweek
         df_date["is_weekend"] = int(date.dayofweek >= 5)
         df_date["month"] = date.month
@@ -58,14 +72,15 @@ def predict():
         df_date["is_start_of_month"] = int(date.day <= 3)
         df_date["is_end_of_month"] = int(date.day >= 27)
 
-        # Композитные фичи
+        # композитные признаки
         df_date["brand_region"] = df_date["Марка"].astype(str) + "_" + df_date["Регион"].astype(str)
         df_date["type_flavor"]  = df_date["Тип"].astype(str)   + "_" + df_date["Вкус"].astype(str)
 
-        # Предсказание (лог → обратно в нормальные продажи)
+        # предсказание
         y_pred_log = model.predict(df_date[features])
         y_pred = np.expm1(y_pred_log)
 
+        # собираем результаты
         for i, row in df_date.iterrows():
             results.append({
                 "Article": row["Article"],
@@ -73,6 +88,12 @@ def predict():
                 "Date": date.strftime("%Y-%m-%d"),
                 "Predicted": float(y_pred[i])
             })
+
+        # добавляем прогноз в историю для корректных лагов на следующую дату
+        df_date_copy = df_date.copy()
+        df_date_copy["Sold"] = y_pred.round().astype(int)
+        df_date_copy["Date"] = date
+        history_df = pd.concat([history_df, df_date_copy], ignore_index=True)
 
     return jsonify(results)
 

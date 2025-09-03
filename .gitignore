@@ -6,3 +6,6 @@ actualdata/expanded.csv
 actualdata/catboost_info
 actualdata/plots
 actualdata/catboost_model.cbm
+train
+actualdata/backup
+actualdata/by_department

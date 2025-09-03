@@ -3,7 +3,7 @@ import json
 import os
 
 # Загрузка CSV
-df = pd.read_csv("sales_short.csv",
+df = pd.read_csv("/mnt/d/OSPanel/domains/Etna_test/actualdata/data.csv",
                  sep=',', dayfirst=True, parse_dates=['Date'])
 
 # Парсинг JSON ProductProperties
@@ -63,6 +63,6 @@ for (dept, article), g in df.groupby(group_cols, sort=False):
             df.at[idx, 'days_since_last_restock'] = None if last is None else (row['Date'] - last).days
 
 # Сохраняем расширенный CSV
-out_path = os.path.join(os.getcwd(), 'sales_short_expanded.csv')
+out_path = os.path.join(os.getcwd(), 'expanded.csv')
 df.to_csv(out_path, sep=';', index=False)
 print(f"✅ Saved: {out_path}")
