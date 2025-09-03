@@ -86,13 +86,13 @@ def predict():
 
         # Предсказание
         y_pred_log = model.predict(X)
-        y_pred = np.expm1(y_pred_log)
+        y_pred = np.abs(np.round(np.expm1(y_pred_log)))
 
         # Формирование ответа
         response = {
             "article": article,
-            "predictions": y_pred.tolist(),
-            "sum_predictions": y_pred.sum(),
+            "predictions": [int(x) for x in y_pred],
+            "sum_predictions": int(y_pred.sum()),
             "dates": df['Date'].dt.strftime('%Y-%m-%d').tolist()
         }
         return jsonify(response)
