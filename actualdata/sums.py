@@ -3,15 +3,22 @@ import pandas as pd
 # Загружаем CSV
 df = pd.read_csv("predictions.csv", sep=";", parse_dates=["Date"])
 
-# Сумма по каждому департаменту
-grouped = df.groupby("Department").agg(
-    fact_sum=("Actual", "sum"),
-    forecast_sum=("Predicted", "sum")
-).reset_index()
+# Группировка: подразделение + артикул + наименование товара
+grouped = df.groupby(
+    ["Department", "Article", "ProductName"], as_index=False
+).agg(
+    план=("Predicted", "sum"),
+    факт=("Actual", "sum")
+)
 
-# Вывод
-for _, row in grouped.iterrows():
-    print(f"Департамент: {row['Department']}")
-    print(f"  Сумма факт за месяц: {row['fact_sum']}")
-    print(f"  Сумма прогноз за месяц: {row['forecast_sum']}")
-    print("-" * 30)
+# Переименовываем колонки как надо
+grouped = grouped.rename(columns={
+    "Department": "подразделение",
+    "Article": "наименование товара (код)",
+    "ProductName": "наименование товара"
+})
+
+# Сохраняем в CSV
+grouped.to_csv("summary.csv", sep=";", index=False)
+
+print("✅ summary.csv готов")

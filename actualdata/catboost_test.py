@@ -21,7 +21,7 @@ def safe_mape(y_true, y_pred):
 # Загружаем данные
 # ----------------------
 df = pd.read_csv(
-    'by_department/expanded_TALTHB-DP0031.csv',
+    'expanded.csv',
     sep=';',
     parse_dates=['Date'],
     dayfirst=False
@@ -80,16 +80,36 @@ features = product_features + [
     "quarter","is_start_of_month","is_end_of_month"
 ]
 cat_features = ["Department"] + product_features
+for col in cat_features:
+    df[col] = df[col].fillna("NA").astype(str)
 target = "Sold"
+
+df['Sold'] = pd.to_numeric(df['Sold'], errors='coerce').fillna(0).astype(int)
+
+df['Sold'] = df['Sold'].clip(lower=0)
 
 # ----------------------
 # Train/Test
 # ----------------------
-train = df[df["Date"] <= "2025-06-30"]
-test  = df[df["Date"] >  "2025-06-30"]
+train = df[df["Date"] <= "2025-06-30"].copy()
+test  = df[df["Date"] >  "2025-06-30"].copy()
 
-X_train, y_train = train[features], np.log1p(train[target])
-X_test,  y_test  = test[features], test[target]
+# Безопасный таргет: лог от (>=0)
+y_train = np.log1p(train[target].clip(lower=0))
+X_train = train[features].copy()
+
+# Удаляем строки с невалидным таргетом (NaN / inf), чтобы CatBoost не ругался
+finite_mask = np.isfinite(y_train)
+if not finite_mask.all():
+    removed = (~finite_mask).sum()
+    print(f"⚠️ Удаляю {removed} строк(у) из train из-за невалидного таргета (NaN/inf).")
+    X_train = X_train.loc[finite_mask].reset_index(drop=True)
+    y_train = y_train[finite_mask].reset_index(drop=True)
+
+# Аналогично для теста (если планируешь лог-метрику/сравнение)
+# На тесте ты у себя не логируешь y_test в предсказаниях — оставлю как у тебя:
+X_test = test[features].copy()
+y_test = test[target].copy()
 
 # ----------------------
 # Optuna оптимизация
@@ -140,7 +160,7 @@ model = CatBoostRegressor(**best_params, verbose=100)
 model.fit(
     X_train, y_train,
     cat_features=cat_features,
-    eval_set=(X_test, np.log1p(y_test)),
+    eval_set=(X_test, np.log1p(y_test.clip(lower=0))),
     early_stopping_rounds=200,
     use_best_model=True
 )

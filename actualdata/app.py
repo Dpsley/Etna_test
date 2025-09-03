@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 import pandas as pd
+import numpy as np
 from catboost import CatBoostRegressor
-from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
@@ -9,73 +9,70 @@ app = Flask(__name__)
 model = CatBoostRegressor()
 model.load_model("catboost_model.cbm")
 
-# Загружаем справочник товаров и последние данные для лагов/остатков
-products_df = pd.read_csv("expanded_jan2024.csv", sep=";")
-products_df = products_df.drop_duplicates(subset=["Article", "ProductName"], keep="last")
-
-features = [
-    "sold_lag1", "sold_lag7", "sold_ma7", "sold_ma14",
-    "stock_diff", "restock_flag", "days_since_last_restock",
-    "day_of_week", "is_weekend", "month"
+# Те же списки фич, что и в обучении
+product_features = [
+    "ProductGroup","ProductType","Вид","Регион","Тип",
+    "Марка","Код производителя","Вкус","Ароматизированный",
+    "brand_region","type_flavor"
 ]
+lag_days = [1,2,3,7,14,21,28,60,90]
+ma_windows = [3,7,14,21,28,60,90]
+
+features = product_features + [
+    "Department",
+    *[f'sold_lag{l}' for l in lag_days],
+    *[f'sold_ma{w}' for w in ma_windows],
+    *[f'sold_median{w}' for w in ma_windows],
+    "sold_std7","sold_std30",
+    "stock_diff","restock_flag","days_since_last_restock",
+    "Reserve","Available",
+    "sold_last_day_binary","sold_last_week_binary","sold_last_month_binary",
+    "day_of_week","is_weekend","month","day",
+    "quarter","is_start_of_month","is_end_of_month"
+]
+cat_features = ["Department"] + product_features
+
+# Загружаем справочник с последними значениями по товарам
+products_df = pd.read_csv("expanded.csv", sep=";")
 
 @app.route("/predict", methods=["POST"])
 def predict():
     data = request.json
     if "start_date" not in data or "end_date" not in data:
-        return jsonify({"error": "start_date and end_date fields are required"}), 400
+        return jsonify({"error": "start_date and end_date required"}), 400
 
     start_date = pd.to_datetime(data["start_date"])
     end_date = pd.to_datetime(data["end_date"])
-    if start_date > end_date:
-        return jsonify({"error": "start_date cannot be after end_date"}), 400
-
-    # Формируем список всех дат в диапазоне
     dates = pd.date_range(start=start_date, end=end_date)
+
     results = []
-
-    # Для каждого товара создаём словарь лагов/остатков
-    lag_data = {}
-    for _, row in products_df.iterrows():
-        lag_data[row["Article"]] = {
-            "ProductName": row["ProductName"],
-            "sold_history": [row["sold_lag1"], row["sold_lag7"], row["sold_ma7"], row["sold_ma14"]],
-            "stock_diff": row["stock_diff"],
-            "restock_flag": row["restock_flag"],
-            "days_since_last_restock": row["days_since_last_restock"]
-        }
-
     for date in dates:
-        for article, info in lag_data.items():
-            sold_history = info["sold_history"]
+        df_date = products_df.copy()
 
-            feat = {
-                "sold_lag1": sold_history[0],
-                "sold_lag7": sold_history[1],
-                "sold_ma7": sold_history[2],
-                "sold_ma14": sold_history[3],
-                "stock_diff": info["stock_diff"],
-                "restock_flag": info["restock_flag"],
-                "days_since_last_restock": info["days_since_last_restock"],
-                "day_of_week": date.dayofweek,
-                "is_weekend": 1 if date.dayofweek >= 5 else 0,
-                "month": date.month
-            }
+        # Дата-фичи
+        df_date["day_of_week"] = date.dayofweek
+        df_date["is_weekend"] = int(date.dayofweek >= 5)
+        df_date["month"] = date.month
+        df_date["day"] = date.day
+        df_date["quarter"] = date.quarter
+        df_date["is_start_of_month"] = int(date.day <= 3)
+        df_date["is_end_of_month"] = int(date.day >= 27)
 
-            pred = model.predict(pd.DataFrame([feat]))[0]
+        # Композитные фичи
+        df_date["brand_region"] = df_date["Марка"].astype(str) + "_" + df_date["Регион"].astype(str)
+        df_date["type_flavor"]  = df_date["Тип"].astype(str)   + "_" + df_date["Вкус"].astype(str)
+
+        # Предсказание (лог → обратно в нормальные продажи)
+        y_pred_log = model.predict(df_date[features])
+        y_pred = np.expm1(y_pred_log)
+
+        for i, row in df_date.iterrows():
             results.append({
-                "Article": article,
-                "ProductName": info["ProductName"],
+                "Article": row["Article"],
+                "ProductName": row["ProductName"],
                 "Date": date.strftime("%Y-%m-%d"),
-                "Predicted": float(pred)
+                "Predicted": float(y_pred[i])
             })
-
-            # Обновляем лаги для следующей даты
-            sold_history[0] = pred
-            sold_history[1] = sum(sold_history[-6:] + [pred]) / 7
-            sold_history[2] = sum(sold_history[-6:] + [pred]) / 7
-            sold_history[3] = sum(sold_history) / 4
-            info["sold_history"] = sold_history
 
     return jsonify(results)
 
