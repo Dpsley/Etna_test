@@ -7,5 +7,6 @@ actualdata/catboost_info
 actualdata/plots
 actualdata/catboost_model.cbm
 train
+train/*.jsonl
 actualdata/backup
 actualdata/by_department
