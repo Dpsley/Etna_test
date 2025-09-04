@@ -7,3 +7,9 @@ prophet
 etna
 catboost
 optuna
+etna[clearml]
+etna[statsforecast]
+etna[classification]
+etna[wandb]
+etna[timesfm]
+etna[torch]
