@@ -1,92 +1,163 @@
-# forecast_etna_nbeats_gpu_fixed.py
+from etna.transforms import FilterFeaturesTransform
+from etna.models.nn import DeepStateModel
+from etna.models.nn.deepstate import CompositeSSM
+from etna.models.nn.deepstate import LevelTrendSSM
+from etna.models.nn.deepstate import SeasonalitySSM
+import random
+import matplotlib.pyplot as plt
+
+import numpy as np
 import pandas as pd
-import json
-from etna.datasets import TSDataset
-from etna.models.nn import NBeatsInterpretableModel
-from etna.transforms import LagTransform, DateFlagsTransform, LabelEncoderTransform
-from etna.pipeline import Pipeline
-import argparse
 import torch
+from etna.models.nn import NBeatsGenericModel
+from etna.models.nn import NBeatsInterpretableModel
+from etna.analysis import plot_backtest
+from etna.datasets.tsdataset import TSDataset
+from etna.metrics import MAE, RMSE
+from etna.metrics import MAPE
+from etna.metrics import SMAPE
+from etna.models import SeasonalMovingAverageModel
+from etna.pipeline import Pipeline
+from etna.transforms import DateFlagsTransform
+from etna.transforms import LabelEncoderTransform
+from etna.transforms import LagTransform
+from etna.transforms import LinearTrendTransform
+from etna.transforms import SegmentEncoderTransform
+from etna.transforms import StandardScalerTransform
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--input", default="expanded_etna.csv")
-parser.add_argument("--forecast_days", type=int, default=30)
-parser.add_argument("--output", default="forecast.csv")
-parser.add_argument("--department", default=None)
-parser.add_argument("--article", default=None)
-args = parser.parse_args()
+DATA_CSV = "expanded_etna.csv"
+FORECAST_DAYS = 30
+TARGET_COL = "target"
+SEGMENT_COL = "segment"
+OUTPUT_PLOT = "backtest_nbeats_main.png"
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"Используем устройство: {device}")
 
-df = pd.read_csv(args.input, parse_dates=["timestamp"])
-df.rename(columns={"Sold": "target"}, inplace=True)
+def set_seed(seed: int = 42):
+    """Set random seed for reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
-if args.department:
-    df = df[df["Department"] == args.department].copy()
-if args.article:
-    df = df[df["Article"] == args.article].copy()
+# -----------------------------
+# 1. Загружаем данные
+# -----------------------------
+df = pd.read_csv(DATA_CSV)
+ts = TSDataset(df, freq="D")
 
-def parse_props(s):
-    try:
-        return json.loads(s)
-    except:
-        return {}
 
-props_df = df["ProductProperties"].apply(parse_props).apply(pd.Series)
-df = pd.concat([df, props_df], axis=1)
+HORIZON = 7
+SEGMENT_FILTER = "АТ Москва|TALTHA-BP0026"  # нужный сегмент
 
-df["segment"] = df["Department"].astype(str) + "|" + df["Article"].astype(str)
+df = pd.read_csv(DATA_CSV)
+df['timestamp'] = pd.to_datetime(df['timestamp'])
+df = df.sort_values(['segment', 'timestamp']).reset_index(drop=True)
 
-ts_df = df[["timestamp", "segment", "target", "ProductType"] + list(props_df.columns)]
-ts = TSDataset(ts_df, freq="D")
+# порог — минимум, который требуется модели
+threshold = (2 * HORIZON) + HORIZON  # input_size + output_size = 3*HORIZON
+print("Threshold (min required length):", threshold)
+
+# считаем непустые значения таргета по сегменту
+counts = df.dropna(subset=[TARGET_COL]).groupby(SEGMENT_COL)[TARGET_COL].count()
+print(counts.describe())
+
+# список сегментов, которые слишком короткие
+bad_segments = counts[counts <= threshold].index.tolist()
+if bad_segments:
+    print(f"Обрезаем {len(bad_segments)} коротких сегментов:")
+    for s in bad_segments:
+        print("  -", s)
+else:
+    print("Коротких сегментов не найдено.")
+
+# фильтруем датафрейм — оставляем только валидные сегменты
+df = df[df[SEGMENT_COL] == SEGMENT_FILTER].copy()
+
+df_filtered = df[~df[SEGMENT_COL].isin(bad_segments)].copy()
+
+# safety-check: если вдруг все сегменты отрезало — падаем с понятной ошибкой
+if df_filtered[SEGMENT_COL].nunique() == 0:
+    raise RuntimeError("После фильтрации не осталось сегментов. Проверь данные или порог threshold.")
+
+# создаём TSDataset из отфильтрованных данных
+ts = TSDataset(df_filtered, freq="D")
+
+metrics = [SMAPE(), MAPE(), MAE(), RMSE()]
+model_sma = SeasonalMovingAverageModel(window=5, seasonality=7)
+linear_trend_transform = LinearTrendTransform(in_column="target")
+
+num_lags = 7
 
 transforms = [
-    LagTransform(in_column="target", lags=[1, 2, 3, 7, 14, 21, 30, 45, 60, 75, 90, 180]),
+    SegmentEncoderTransform(),
+    StandardScalerTransform(in_column="target"),
     DateFlagsTransform(
         day_number_in_week=True,
         day_number_in_month=True,
-        month_number_in_year=True,
+        day_number_in_year=True,
         week_number_in_month=True,
         week_number_in_year=True,
+        month_number_in_year=True,
         season_number=True,
         year_number=True,
-        is_weekend=True
+        is_weekend=True,
+        out_column="dateflag",
     ),
+    LagTransform(
+        in_column="target",
+        lags=[HORIZON + i for i in range(num_lags)],
+        out_column="target_lag",
+    ),
+    LabelEncoderTransform(
+        in_column="dateflag_day_number_in_week", strategy="none", out_column="dateflag_day_number_in_week_label"
+    ),
+    LabelEncoderTransform(
+        in_column="dateflag_day_number_in_month", strategy="none", out_column="dateflag_day_number_in_month_label"
+    ),
+    FilterFeaturesTransform(exclude=["dateflag_day_number_in_week", "dateflag_day_number_in_month"]),
 ]
 
-cat_cols = ["ProductType"] + list(props_df.columns)
-for col in cat_cols:
-    if col in df.columns:
-        transforms.append(LabelEncoderTransform(in_column=col))
 
-model = NBeatsInterpretableModel(
-    input_size=30,
-    output_size=args.forecast_days,
+embedding_sizes = {
+    "dateflag_day_number_in_week_label": (7, 7),
+    "dateflag_day_number_in_month_label": (31, 7),
+    "segment_code": (4, 7),
+}
+
+monthly_smm = SeasonalitySSM(num_seasons=31, timestamp_transform=lambda x: x.day - 1)
+weekly_smm = SeasonalitySSM(num_seasons=7, timestamp_transform=lambda x: x.weekday())
+
+set_seed()
+
+model_nbeats_interp = NBeatsInterpretableModel(
+    input_size=4 * HORIZON,
+    output_size=HORIZON,
     loss="smape",
-    trend_blocks=3,
-    trend_layers=4,
-    trend_layer_size=256,
-    degree_of_polynomial=2,
-    seasonality_blocks=3,
-    seasonality_layers=4,
-    seasonality_layer_size=2048,
-    num_of_harmonics=1,
+    trend_layer_size=64,
+    seasonality_layer_size=256,
+    trainer_params=dict(max_epochs=1000),
     lr=1e-3,
-    train_batch_size=1024,
-    test_batch_size=1024,
-    trainer_params={"max_epochs": 50, "accelerator": "gpu" if device=="cuda" else "cpu", "devices": 1}
 )
 
-pipeline = Pipeline(model=model, transforms=transforms, horizon=args.forecast_days)
+pipeline_nbeats_interp = Pipeline(
+    model=model_nbeats_interp,
+    horizon=HORIZON,
+    transforms=[],
+)
 
-print("Обучаем NBEATS модель...")
-pipeline.fit(ts)
+backtest_result_nbeats_interp = pipeline_nbeats_interp.backtest(ts, metrics=metrics, n_folds=3, n_jobs=1)
 
-print(f"Делаем прогноз на {args.forecast_days} дней...")
-forecast = pipeline.forecast()
+metrics_nbeats_interp = backtest_result_nbeats_interp["metrics"]
+forecast_ts_list_nbeats_interp = backtest_result_nbeats_interp["forecasts"]
 
-forecast_df = forecast.to_pandas().reset_index()
-forecast_df.rename(columns={"timestamp": "Date"}, inplace=True)
-forecast_df.to_csv(args.output, index=False)
-print(f"Прогноз сохранён в {args.output}")
+print(metrics_nbeats_interp)
+score = metrics_nbeats_interp["SMAPE"].mean()
+print(f"Average SMAPE: {score:.3f}")
+
+fig, ax = plt.subplots(figsize=(20, 8))
+plot_backtest(forecast_ts_list_nbeats_interp, ts, history_len=30)
+plt.title(f"Backtest N-BEATS ({SEGMENT_FILTER})")
+plt.tight_layout()
+plt.savefig(OUTPUT_PLOT)
+plt.close()
+print(f"График сохранён в {OUTPUT_PLOT}")

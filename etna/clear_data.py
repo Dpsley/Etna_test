@@ -1,7 +1,7 @@
 import pandas as pd
 
 # Загружаем
-df = pd.read_csv("data.csv", sep=",", dayfirst=True, parse_dates=["Date"])
+df = pd.read_csv("sales_remains.csv", sep=",", dayfirst=True, parse_dates=["Date"])
 
 # Чистим ненужное
 for col in ["Stock", "Reserve", "Available"]:
