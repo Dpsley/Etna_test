@@ -5,7 +5,7 @@ import json
 import os
 
 # Загрузка CSV
-df = pd.read_csv("/mnt/d/OSPanel/domains/Etna_test/actualgen2/data.csv",
+df = pd.read_csv("/mnt/d/OSPanel/domains/Etna_test/actualgen2/sales_remains_072023_062025.csv",
                  sep=',', dayfirst=True, parse_dates=['Date'])
 
 print(df.columns.tolist())
@@ -13,15 +13,17 @@ print(df.columns.tolist())
 # Парсинг JSON ProductProperties
 def parse_props(s):
     try:
-        return json.loads(s)
+        s2 = s.replace("“", '"').replace("”", '"').replace("«", '"').replace("»", '"')
+        props = json.loads(s2)
+        for k, v in props.items():
+            if v == "" or v is None:
+                props[k] = "Unset"
+        return props
     except Exception:
-        try:
-            s2 = s.replace("“", '"').replace("”", '"').replace("«", '"').replace("»", '"')
-            return json.loads(s2)
-        except Exception:
-            return {}
+        return {}
 
 props_df = df['ProductProperties'].apply(lambda s: pd.Series(parse_props(s)))
+
 df = pd.concat([df, props_df], axis=1)
 
 # Календарные признаки
@@ -64,7 +66,7 @@ for w in ma_windows:
     df[f'sold_ma{w}'] = df.groupby(group_cols)['Sold'].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean().fillna(0))
     df[f'sold_median{w}'] = df.groupby(group_cols)['Sold'].transform(lambda x: x.shift(1).rolling(w, min_periods=1).median().fillna(0))
 
-for col in ['Stock','Reserve','Available']:
+for col in ['Reserve','Available']:
     if col in df.columns:
         df.drop(columns=[col], inplace=True)
 

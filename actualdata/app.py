@@ -2,103 +2,87 @@ from flask import Flask, request, jsonify
 import pandas as pd
 import numpy as np
 from catboost import CatBoostRegressor
-import json
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
-# Загрузка модели
+MODEL_PATH = "catboost_model.cbm"
+DATA_CSV = "expanded.csv"
+
+# Загружаем модель один раз
 model = CatBoostRegressor()
-model.load_model('catboost_model.cbm')
+model.load_model(MODEL_PATH)
 
-# Функция для генерации признаков
-def generate_features(df, lag_days, ma_windows):
-    # Лаги
-    for lag in lag_days:
-        df[f'sold_lag{lag}'] = df['Sold'].shift(lag).fillna(0)
+# Категориальные фичи
+CAT_FEATURES = [
+    'Department', 'Article', 'ProductName', 'ProductGroup', 'ProductType',
+    'Вид', 'Регион', 'Тип', 'Марка', 'Код производителя', 'Вкус', 'Ароматизированный'
+]
 
-    # Скользящие средние
-    for w in ma_windows:
-        df[f'sold_ma{w}'] = df['Sold'].rolling(w).mean().fillna(0)
-        df[f'sold_median{w}'] = df['Sold'].rolling(w).median().fillna(0)
-
-    # Волатильность
-    df["sold_std7"] = df["Sold"].rolling(7).std().fillna(0)
-    df["sold_std30"] = df["Sold"].rolling(30).std().fillna(0)
-
-    # Бинарные признаки
-    df['sold_last_day_binary'] = (df['sold_lag1'] > 0).astype(int)
-    df['sold_last_week_binary'] = (df['sold_lag7'] > 0).astype(int)
-    df['sold_last_month_binary'] = (df['sold_lag28'] > 0).astype(int)
-
-    # Преобразование категориальных признаков
-    df['brand_region'] = df['Марка'].astype(str) + "_" + df['Регион'].astype(str)
-    df['type_flavor'] = df['Тип'].astype(str) + "_" + df['Вкус'].astype(str)
-
-    df['quarter'] = df['Date'].dt.quarter
-    df['is_start_of_month'] = (df['Date'].dt.day <= 3).astype(int)
-    df['is_end_of_month'] = (df['Date'].dt.day >= 27).astype(int)
-
+# Генерация лагов и скользящих средних
+def generate_features(df, max_lag=28):
+    df = df.sort_values('Date')
+    for lag in [1, 7, 14, 28]:
+        df[f'sold_lag{lag}'] = df['Sold'].shift(lag)
+    for ma in [7, 14]:
+        df[f'sold_ma{ma}'] = df['Sold'].rolling(ma).mean().shift(1)
     return df
 
-@app.route('/predict', methods=['POST'])
-def predict():
+# Обработка категориальных фичей
+def process_cat_features(df):
+    for col in CAT_FEATURES:
+        df[col] = df[col].fillna('nan').astype(str)
+    return df
+
+@app.route("/forecast", methods=["POST"])
+def forecast():
     try:
-        # Получение данных из запроса
-        data = request.get_json()
-        article = data['article']
-        start_date = pd.to_datetime(data['start_date'])
-        end_date = pd.to_datetime(data['end_date'])
+        data = request.json
+        start_date = datetime.fromisoformat(data['start_date'])
+        end_date = datetime.fromisoformat(data['end_date'])
 
-        # Фильтрация данных по артикулу
-        df = pd.read_csv('expanded.csv', sep=';', parse_dates=['Date'], dayfirst=False)
-        df = df[df['Article'] == article]
+        df = pd.read_csv(DATA_CSV, sep=';', parse_dates=['Date'], dayfirst=True)
 
-        # Генерация признаков
-        lag_days = [1, 2, 3, 7, 14, 21, 28, 60, 90]
-        ma_windows = [3, 7, 14, 21, 28, 60, 90]
-        df = generate_features(df, lag_days, ma_windows)
+        # Генерим признаки
+        df = generate_features(df)
+        df = process_cat_features(df)
 
-        # Фильтрация данных по диапазону дат
-        df = df[(df['Date'] >= start_date) & (df['Date'] <= end_date)]
+        # Фильтруем по дате
+        last_date = df['Date'].max()
+        future_dates = pd.date_range(start=last_date + timedelta(days=1),
+                                     end=end_date)
+        forecast_rows = []
 
-        # Подготовка данных для предсказания
-        features = [
-            "ProductGroup", "ProductType", "Вид", "Регион", "Тип",
-            "Марка", "Код производителя", "Вкус", "Ароматизированный",
-            "brand_region", "type_flavor", "Department",
-            *[f'sold_lag{l}' for l in lag_days],
-            *[f'sold_ma{w}' for w in ma_windows],
-            *[f'sold_median{w}' for w in ma_windows],
-            "sold_std7", "sold_std30", "stock_diff", "restock_flag",
-            "days_since_last_restock", "Reserve", "Available",
-            "sold_last_day_binary", "sold_last_week_binary",
-            "sold_last_month_binary", "day_of_week", "is_weekend",
-            "month", "day", "quarter", "is_start_of_month", "is_end_of_month"
-        ]
-        X = df[features]
+        for d in future_dates:
+            # Для каждого дня создаем строку на основе последнего состояния
+            last_row = df[df['Date'] == last_date].copy()
+            last_row['Date'] = d
 
-        # Преобразование категориальных признаков
-        cat_features = ["Department"] + ["ProductGroup", "ProductType", "Вид", "Регион", "Тип",
-                                         "Марка", "Код производителя", "Вкус", "Ароматизированный",
-                                         "brand_region", "type_flavor"]
-        for col in cat_features:
-            X[col] = X[col].fillna("NA").astype(str)
+            # обновляем лаги
+            for lag in [1, 7, 14, 28]:
+                last_row[f'sold_lag{lag}'] = df.loc[df['Date'] == last_date - timedelta(days=lag), 'Sold'].values[0] \
+                    if not df.loc[df['Date'] == last_date - timedelta(days=lag), 'Sold'].empty else 0
+            for ma in [7, 14]:
+                last_row[f'sold_ma{ma}'] = df.loc[df['Date'] <= last_date].tail(ma)['Sold'].mean()
+
+            forecast_rows.append(last_row)
+            last_date = d
+
+        df_forecast = pd.concat(forecast_rows, ignore_index=True)
+        df_forecast = process_cat_features(df_forecast)
 
         # Предсказание
-        y_pred_log = model.predict(X)
-        y_pred = np.abs(np.round(np.expm1(y_pred_log)))
+        X_pred = df_forecast.drop(columns=['Sold'])
+        y_pred = model.predict(X_pred)
 
-        # Формирование ответа
-        response = {
-            "article": article,
-            "predictions": [int(x) for x in y_pred],
-            "sum_predictions": int(y_pred.sum()),
-            "dates": df['Date'].dt.strftime('%Y-%m-%d').tolist()
-        }
-        return jsonify(response)
+        df_forecast['PredictedSold'] = y_pred
+
+        # Возвращаем JSON
+        result = df_forecast[['Date', 'PredictedSold']].to_dict(orient='records')
+        return jsonify(result)
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        return jsonify({"error": str(e)}), 500
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run(debug=True)

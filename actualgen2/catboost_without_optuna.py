@@ -58,8 +58,8 @@ df['Sold'] = df['Sold'].clip(lower=0)
 # ----------------------
 # Train/Test
 # ----------------------
-train = df[df["Date"] <= "2025-06-30"].copy()
-test  = df[df["Date"] >  "2025-06-30"].copy()
+train = df[df["Date"] <= "2025-05-31"].copy()
+test  = df[df["Date"] >  "2025-05-31"].copy()
 
 y_train = np.log1p(train[target].clip(lower=0))
 X_train = train[features].copy()
@@ -84,14 +84,14 @@ eval_pool  = Pool(data=X_test,  label=np.log1p(y_test.clip(lower=0)), cat_featur
 # Финальная модель с фикс параметрами
 # ----------------------
 safe_params  = {
-    'iterations': 1763,
-    'learning_rate': 0.0364637585556757,
-    'depth': 6,
-    'l2_leaf_reg': 0.02377294218983323,
-    'random_strength': 1.161435457162796,
-    'bagging_temperature': 3.9589913674642148,
-    'border_count': 450,
-    'one_hot_max_size': 4,
+    'iterations': 2649,
+    'learning_rate': 0.07607288120744186,
+    'depth': 13,
+    'l2_leaf_reg': 0.062117804119712364,
+    'random_strength': 8.94510905467983,
+    'bagging_temperature': 0.9510767003438676,
+    'border_count': 188,
+    'one_hot_max_size': 20,
     'loss_function': 'RMSE',
     'random_seed': 42
 }
