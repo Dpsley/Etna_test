@@ -53,11 +53,16 @@ print(train_ts[:, :, "target"].shape, test_ts[:, :, "target"].shape)
 seg = SegmentEncoderTransform()
 lags = LagTransform(in_column="target", lags=[31,60,90,180,210,240,270,300,360], out_column="target_lag")
 stl = STLTransform(in_column="target", period=7)
-#trend = LinearTrendTransform(in_column="target")
+trend = LinearTrendTransform(in_column="target")
 imputer = TimeSeriesImputerTransform(in_column="target")
-#mean_tr = MeanTransform(in_column="target", out_column="mean", window=5)
+mean_tr = MeanTransform(in_column="target", out_column="mean_31", window=31)
+mean_tr_45 = MeanTransform(in_column="target", out_column="mean_45", window=45)
+mean_tr_60 = MeanTransform(in_column="target", out_column="mean_60", window=60)
+mean_tr_75 = MeanTransform(in_column="target", out_column="mean_75", window=75)
+mean_tr_90 = MeanTransform(in_column="target", out_column="mean_90", window=90)
+
 #cp_seg = ChangePointsSegmentationTransform(in_column="target")
-#fourier = FourierTransform(in_column="target", period=90, order=2)
+fourier = FourierTransform(in_column="target", period=90, order=2)
 log_tr = LogTransform(in_column="target")  # создаем новую колонку target_log
 
 date_flags = DateFlagsTransform(
@@ -71,22 +76,26 @@ date_flags = DateFlagsTransform(
     is_weekend=True,
     out_column="flag",
 )
-#holiday_tr = HolidayTransform(out_column="holiday", iso_code="RUS")
+holiday_tr = HolidayTransform(out_column="holiday", iso_code="RUS")
 
 transforms = [
     log_tr,
-    lags, #mean_tr, #holiday_tr,
+    lags,
+    mean_tr,
+    mean_tr_45,
+    mean_tr_60,
+    mean_tr_75,
+    mean_tr_90,
+    holiday_tr,
     date_flags,
     stl,
-    #trend,
-    imputer, #fourier,
+    trend,
+    imputer,
+    fourier,
     seg
 ]
 
 print(df["target"].describe())
-
-
-
 
 def objective(trial):
     model = CatBoostMultiSegmentModel(
@@ -107,7 +116,7 @@ def objective(trial):
     pipeline = Pipeline(model=model, transforms=transforms, horizon=FORECAST_DAYS)
     pipeline.fit(ts=train_ts)
 
-    forecast = pipeline.forecast(ts=train_ts, prediction_interval=False, n_folds=1)
+    forecast = pipeline.forecast(ts=train_ts, prediction_interval=False, n_folds=30)
 
     # тут исправление: берем средний SMAPE по всем сегментам
     smape_scores = RMSE(mode="macro")(test_ts, forecast)
@@ -125,7 +134,7 @@ def objective(trial):
 # 4. Запускаем Optuna
 # -----------------------------
 study = optuna.create_study(direction="minimize")
-study.optimize(objective, n_trials=4, show_progress_bar=True)  # можно увеличить n_trials для лучшего подбора
+study.optimize(objective, n_trials=200, show_progress_bar=True)  # можно увеличить n_trials для лучшего подбора
 
 print("Best trial:", study.best_trial.params)
 
