@@ -22,7 +22,7 @@ def safe_mape(y_true, y_pred):
 # ----------------------
 # Загружаем данные
 # ----------------------
-df = pd.read_csv('expanded.csv', sep=';', parse_dates=['Date'], dayfirst=False)
+df = pd.read_csv('sales_remains_072023_062025.csv', sep=';', parse_dates=['Date'], dayfirst=False)
 
 # ----------------------
 # Фичи и таргет
