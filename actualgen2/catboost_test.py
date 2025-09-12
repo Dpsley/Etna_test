@@ -58,8 +58,8 @@ df['Sold'] = df['Sold'].clip(lower=0)
 # ----------------------
 # Train/Test
 # ----------------------
-train = df[df["Date"] <= "2025-05-31"].copy()
-test  = df[df["Date"] >  "2025-05-31"].copy()
+train = df[df["Date"] <= "2025-06-30"].copy()
+test  = df[df["Date"] >=  "2025-07-01"].copy()
 
 # Безопасный таргет: лог от (>=0)
 y_train = np.log1p(train[target].clip(lower=0))

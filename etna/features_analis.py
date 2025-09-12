@@ -1,7 +1,5 @@
 import pandas as pd
-from catboost import CatBoostRegressor
 from etna.datasets import TSDataset
-from etna.ensembles import StackingEnsemble, VotingEnsemble
 from etna.pipeline import Pipeline
 from etna.models import CatBoostMultiSegmentModel
 from etna.transforms import (
@@ -64,7 +62,7 @@ lags_small = LagTransform(in_column="target", lags=[21,24,27,28,29,31], out_colu
 lags = LagTransform(in_column="target", lags=[31], out_column="target_lag")
 lags_macro = LagTransform(in_column="target", lags=[1,3,5,7], out_column="lags_macro")
 lags_macro_2 = LagTransform(in_column="target", lags=[2,4,6], out_column="lags_macro_2")
-stl = STLTransform(in_column="target", model="arima", period=90, robust=True)
+stl = STLTransform(in_column="target", period=7)
 trend = LinearTrendTransform(in_column="target")
 imputer = TimeSeriesImputerTransform(in_column="target")
 mean_tr_1 = MeanTransform(in_column="target", alpha=0.5, seasonality=31, min_periods=1, out_column="mean_1", window=1)
@@ -117,10 +115,10 @@ transforms = [
     std_7,
     std_14,
     std_30,
-    log_tr,
+    LogTransform(in_column="target"),  # создаем новую колонку target_log,
     holiday_tr,
     date_flags,
-    stl,
+    #stl,
     #trend,
     imputer,
     fourier_31_7,
@@ -199,7 +197,7 @@ best_params = study.best_trial.params
 final_model = CatBoostMultiSegmentModel(**best_params, logging_level="Silent")
 pipeline = Pipeline(model=final_model, transforms=transforms, horizon=FORECAST_DAYS)
 pipeline.fit(ts=train_ts)
-forecast = pipeline.forecast(prediction_interval=True)
+forecast = pipeline.forecast(ts=train_ts, prediction_interval=True)
 
 test_df = test_ts.to_pandas(flatten=True).reset_index()
 forecast_df = forecast.to_pandas(flatten=True).reset_index()
