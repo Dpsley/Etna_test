@@ -234,15 +234,22 @@ forecast_df = forecast.to_pandas(flatten=True).reset_index()
 test_df["timestamp"] = pd.to_datetime(test_df["timestamp"])
 forecast_df["timestamp"] = pd.to_datetime(forecast_df["timestamp"])
 
-# вытаскиваем article из segment (до "_")
-test_df["article"] = test_df["segment"].str.split("|").str[0]
-forecast_df["article"] = forecast_df["segment"].str.split("|").str[0]
+test_df["department"] = test_df["segment"].str.split("|").str[0]
+test_df["article"] = test_df["segment"].str.split("|").str[1]
 
-# агрегируем по article + timestamp (сумма по департаментам)
-test_agg = test_df.groupby(["timestamp", "article"], as_index=False)["target"].sum()
-forecast_agg = forecast_df.groupby(["timestamp", "article"], as_index=False)["target"].sum()
+forecast_df["department"] = forecast_df["segment"].str.split("|").str[0]
+forecast_df["article"] = forecast_df["segment"].str.split("|").str[1]
 
-# суммируем все артикулы (чтобы было 2 линии total)
+# агрегируем по department + article + timestamp
+test_agg = test_df.groupby(["timestamp", "department", "article"], as_index=False)["target"].sum()
+forecast_agg = forecast_df.groupby(["timestamp", "department", "article"], as_index=False)["target"].sum()
+
+# суммируем по департаментам и артикулу
+print("=== Прогноз по департаментам и артикулам ===")
+forecast_summary = forecast_agg.groupby(["department", "article"], as_index=False)["target"].sum()
+print(forecast_summary.sort_values(["department", "article"]).to_string(index=False))
+
+# суммируем по всем артиклам для total линии
 total_fact = test_agg.groupby("timestamp", as_index=False)["target"].sum()
 total_forecast = forecast_agg.groupby("timestamp", as_index=False)["target"].sum()
 
