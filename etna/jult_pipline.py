@@ -25,6 +25,8 @@ warnings.simplefilter(action='ignore', category=SettingWithCopyWarning)
 # Настройки
 # -----------------------------
 DATA_CSV = "sales_remains_072023_062025.csv"
+DATA_JULY = "sales_remains_072025.csv"
+
 FORECAST_DAYS = 31
 OUTPUT_PLOT = "auto_backtest.png"
 segment_name = 'АТ Москва|CIMPCH-000062'
@@ -35,8 +37,12 @@ os.environ["CUDA_VISIBLE_DEVICES"] = ""
 # 1. Загружаем данные
 # -----------------------------
 df = pd.read_csv(DATA_CSV)
+test_df = pd.read_csv(DATA_JULY)
+
 np.random.seed(42)
 random.seed(42)
+
+#df_july.drop(["ProductName", "ProductType", "Article", "Department", "ProductProperties", "ProductGroup", "Stock"], axis=1, inplace=True)
 #print("=== Исходный DF ===")
 #print(df.head())
 #print(df.info())
@@ -56,6 +62,11 @@ train_ts, test_ts = ts.train_test_split(train_start="2023-07-01", train_end="202
 print("=== Сегменты TSDataset ===")
 print(ts.segments)
 print("=== Train/ Test shapes ===")
+
+test_df = test_df.copy()
+ts_test_df = TSDataset.to_dataset(df=test_df)
+test_ts = TSDataset(ts_test_df, freq="D")
+
 #print(train_ts[:, :, "target"].shape, test_ts[:, :, "target"].shape)
 # -----------------------------
 # 2. Трансформеры
@@ -160,33 +171,33 @@ transforms = [
 #print(df["target"].describe())
 
 
-
+best_params = {
+    # 'iterations': trial.suggest_int('iterations', 500, 3000),
+    # 'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.6, log=True),
+    # 'depth': trial.suggest_int('depth', 4, 16),
+    # 'l2_leaf_reg': trial.suggest_float('l2_leaf_reg', 0.01, 10.0, log=True),
+    # 'random_strength': trial.suggest_float('random_strength', 0.1, 20.0),
+    # 'bagging_temperature': trial.suggest_float('bagging_temperature', 0, 5.0),
+    # 'border_count': trial.suggest_int('border_count', 32, 512),
+    # 'one_hot_max_size': trial.suggest_int('one_hot_max_size', 2, 25),
+    # 'loss_function': 'RMSE',
+    # 'early_stopping_rounds': 200,
+    # 'random_seed': 42
+    'iterations': 873,
+    'learning_rate': 0.6112990073841404,
+    'depth': 10,
+    'l2_leaf_reg': 9.29277478806184,
+    'random_strength': 0.07240417120087717,
+    'bagging_temperature': 1.5372496609872792,
+    'border_count': 41,
+    'one_hot_max_size': 21,
+    'loss_function': 'RMSE',
+    'early_stopping_rounds': 200,
+    'random_seed': 42
+}
 
 def objective(trial):
-    best_params = {
-        #'iterations': trial.suggest_int('iterations', 500, 3000),
-        #'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.6, log=True),
-        #'depth': trial.suggest_int('depth', 4, 16),
-        #'l2_leaf_reg': trial.suggest_float('l2_leaf_reg', 0.01, 10.0, log=True),
-        #'random_strength': trial.suggest_float('random_strength', 0.1, 20.0),
-        #'bagging_temperature': trial.suggest_float('bagging_temperature', 0, 5.0),
-        #'border_count': trial.suggest_int('border_count', 32, 512),
-        #'one_hot_max_size': trial.suggest_int('one_hot_max_size', 2, 25),
-        #'loss_function': 'RMSE',
-        #'early_stopping_rounds': 200,
-        #'random_seed': 42
-        'iterations': 873,
-        'learning_rate': 0.6112990073841404,
-        'depth': 10,
-        'l2_leaf_reg': 9.29277478806184,
-        'random_strength': 0.07240417120087717,
-        'bagging_temperature': 1.5372496609872792,
-        'border_count': 41,
-        'one_hot_max_size': 21,
-        'loss_function': 'RMSE',
-        'early_stopping_rounds': 200,
-        'random_seed': 42
-    }
+
 
     model = CatBoostMultiSegmentModel(**best_params
 
@@ -200,11 +211,11 @@ def objective(trial):
 
     pipeline = Pipeline(model=model, transforms=transforms, horizon=FORECAST_DAYS)
 
-    pipeline.fit(train_ts)
+    pipeline.fit(ts)
 
     # Backtest на train_ts
     backtest_result = pipeline.backtest(
-        ts=train_ts,
+        ts=ts,
         metrics=[RMSE()],
         n_folds=1,
         mode="constant"
@@ -217,7 +228,7 @@ def objective(trial):
 # -----------------------------
 study = optuna.create_study(direction="minimize")
 study.optimize(objective, n_trials=1, show_progress_bar=True)  # можно увеличить n_trials для лучшего подбора
-best_params = study.best_params
+#best_params = study.best_params
 print("Best trial:", study.best_trial)
 
 # -----------------------------
@@ -225,7 +236,7 @@ print("Best trial:", study.best_trial)
 # -----------------------------
 final_model = CatBoostMultiSegmentModel(**best_params, logging_level="Silent")
 pipeline = Pipeline(model=final_model, transforms=transforms, horizon=FORECAST_DAYS)
-pipeline.fit(ts=train_ts)
+pipeline.fit(ts=ts)
 forecast = pipeline.forecast(prediction_interval=True)
 
 test_df = test_ts.to_pandas(flatten=True).reset_index()
