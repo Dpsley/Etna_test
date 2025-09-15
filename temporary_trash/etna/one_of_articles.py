@@ -24,12 +24,12 @@ warnings.simplefilter(action='ignore', category=SettingWithCopyWarning)
 # -----------------------------
 # Настройки
 # -----------------------------
-DATA_CSV = "sales_remains_072023_062025.csv"
-FORECAST_DAYS = 31
+DATA_CSV = "qu_TALTHA-DP0082.csv"
+FORECAST_DAYS = 123
 OUTPUT_PLOT = "auto_backtest.png"
 segment_name = 'АТ Москва|CIMPCH-000062'
 
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 # -----------------------------
 # 1. Загружаем данные
@@ -52,7 +52,7 @@ print(ts_df.info())
 ts = TSDataset(ts_df, freq="D")
 ts.head(5)
 #exit(-9)
-train_ts, test_ts = ts.train_test_split(train_start="2023-07-01", train_end="2025-05-31", test_start="2025-06-01", test_end="2025-06-30")
+train_ts, test_ts = ts.train_test_split(train_start="2023-07-01", train_end="2025-04-27", test_start="2025-04-28", test_end="2025-06-30")
 print("=== Сегменты TSDataset ===")
 print(ts.segments)
 print("=== Train/ Test shapes ===")
@@ -185,12 +185,10 @@ def objective(trial):
         'one_hot_max_size': 21,
         'loss_function': 'RMSE',
         'early_stopping_rounds': 200,
-        'random_seed': 42
+        'random_seed': 42,
     }
 
-    model = CatBoostMultiSegmentModel(**best_params
-
-    )
+    model = CatBoostMultiSegmentModel(**best_params, task_type="GPU",devices='0')
 
 
 #{'iterations': 873, 'depth': 10, 'learning_rate': 0.6112990073841404, 'l2_leaf_reg': 9.29277478806184,
@@ -223,7 +221,7 @@ print("Best trial:", study.best_trial)
 # -----------------------------
 # 5. Финальная модель с лучшими параметрами
 # -----------------------------
-final_model = CatBoostMultiSegmentModel(**best_params, logging_level="Silent")
+final_model = CatBoostMultiSegmentModel(**best_params, task_type="GPU",devices='0', logging_level="Silent")
 pipeline = Pipeline(model=final_model, transforms=transforms, horizon=FORECAST_DAYS)
 pipeline.fit(ts=train_ts)
 forecast = pipeline.forecast(prediction_interval=True)

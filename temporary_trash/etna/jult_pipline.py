@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pandas as pd
 from catboost import CatBoostRegressor
 from etna.datasets import TSDataset
@@ -27,7 +29,7 @@ warnings.simplefilter(action='ignore', category=SettingWithCopyWarning)
 DATA_CSV = "sales_remains_072023_062025.csv"
 DATA_JULY = "sales_remains_072025.csv"
 
-FORECAST_DAYS = 31
+FORECAST_DAYS = 123
 OUTPUT_PLOT = "auto_backtest.png"
 segment_name = 'АТ Москва|CIMPCH-000062'
 
@@ -237,6 +239,8 @@ print("Best trial:", study.best_trial)
 final_model = CatBoostMultiSegmentModel(**best_params, logging_level="Silent")
 pipeline = Pipeline(model=final_model, transforms=transforms, horizon=FORECAST_DAYS)
 pipeline.fit(ts=ts)
+path_to_save = Path("pipeline_dump")
+pipeline.save(path_to_save)
 forecast = pipeline.forecast(prediction_interval=True)
 
 test_df = test_ts.to_pandas(flatten=True).reset_index()
