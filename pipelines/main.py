@@ -17,6 +17,7 @@ def load_pipline_from_dump() -> Pipeline|Exception:
     """
     try:
         pipeline = load(Pipline_saved_dir / "pipeline.zip", ts=load_actual_dataset())
+        print("pipeline loaded", pipeline)
         return pipeline
     except Exception as e:
         return e

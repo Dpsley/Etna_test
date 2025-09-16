@@ -1,5 +1,4 @@
 import os
-from pathlib import Path
 import pandas as pd
 from etna.models import CatBoostMultiSegmentModel
 from etna.metrics import RMSE
@@ -15,14 +14,27 @@ from dotenv import load_dotenv
 load_dotenv()
 
 HORIZON = os.getenv("HORIZON")
+print(int(HORIZON))
 
 def fitter():
+    print(int(HORIZON))
     train_ts = load_actual_dataset()
+    print(train_ts)
     best_trial = optuna_produce(train_ts)
+    print(best_trial)
     transformers=transformers_generator()
     final_model = CatBoostMultiSegmentModel(**best_trial.params, logging_level="Silent")
-    pipeline = Pipeline(model=final_model, transforms=transformers, horizon=HORIZON)
+    pipeline = Pipeline(model=final_model, transforms=transformers, horizon=int(HORIZON))
     pipeline.fit(ts=train_ts)
+    forecast= pipeline.forecast(ts=train_ts, prediction_interval=True)
+    forecast_df = forecast.to_pandas(flatten=True).reset_index()
+    forecast_df["timestamp"] = pd.to_datetime(forecast_df["timestamp"])
+    forecast_df["department"] = forecast_df["segment"].str.split("|").str[0]
+    forecast_df["article"] = forecast_df["segment"].str.split("|").str[1]
+    forecast_agg = forecast_df.groupby(["timestamp", "department", "article"], as_index=False)["target"].sum()
+    print("=== Прогноз по департаментам и артикулам ===")
+    forecast_summary = forecast_agg.groupby(["department", "article"], as_index=False)["target"].sum()
+    print(forecast_summary.sort_values(["department", "article"]).to_string(index=False))
     save_pipline(pipeline)
     save_model(pipeline.model)
     save_transformers(transformers)
@@ -30,8 +42,8 @@ def fitter():
 def optuna_produce(train_ts) -> FrozenTrial:
     def objective(trial):
         best_params = {
-            'iterations': trial.suggest_int('iterations', 500, 3000),
-            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.6, log=True),
+            'iterations': trial.suggest_int('iterations', 500, 2500),
+            'learning_rate': trial.suggest_float('learning_rate', 0.1, 0.8, log=True),
             'depth': trial.suggest_int('depth', 4, 16),
             'l2_leaf_reg': trial.suggest_float('l2_leaf_reg', 0.01, 10.0, log=True),
             'random_strength': trial.suggest_float('random_strength', 0.1, 20.0),
@@ -43,17 +55,19 @@ def optuna_produce(train_ts) -> FrozenTrial:
             'random_seed': 42
         }
         model = CatBoostMultiSegmentModel(**best_params)
-        pipeline = Pipeline(model=model, transforms=transformers_generator(), horizon=123)
+        pipeline = Pipeline(model=model, transforms=transformers_generator(), horizon=int(HORIZON))
         pipeline.fit(ts=train_ts)
         backtest_result = pipeline.backtest(
             ts=train_ts,
             metrics=[RMSE()],
-            n_folds=1,
+            n_folds=3,
             mode="constant"
         )
         mean_rmse = backtest_result["metrics"]["RMSE"].mean().mean()
         return mean_rmse
 
     study = optuna.create_study(direction="minimize")
-    study.optimize(objective, n_trials=1, show_progress_bar=True)
+    study.optimize(objective, n_trials=30, show_progress_bar=True)
     return study.best_trial
+
+fitter()

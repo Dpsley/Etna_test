@@ -4,12 +4,14 @@ import os
 
 from forecasters.main import new_forecast
 from pipelines.main import load_pipline_from_dump
+from trainers.main import fitter
 
 app = Flask(__name__)
 
 
 @app.route('/train_refresh', methods=['POST'])
 def train_refresh():
+    fitter()
     return True
 
 @app.route('/forecast', methods=['POST'])

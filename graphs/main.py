@@ -1,11 +1,13 @@
 import os
 import matplotlib.pyplot as plt
+import pandas as pd
 from dotenv import load_dotenv
+from pandas import DataFrame
 
 load_dotenv()
-PLOT_DIR = os.getenv("FITTER_PLOT_DIR")
+PLOT_DIR = os.getenv("FORECAST_PLOT_DIR")
 
-def new_forecast_plot(forecast_df):
+def new_forecast_plot(forecast_df: DataFrame):
     """
     Создаёт графики прогноза для каждого сегмента (department+article).
 
@@ -15,7 +17,9 @@ def new_forecast_plot(forecast_df):
         Должен содержать колонки ['timestamp', 'department', 'article', 'target']
     """
     os.makedirs(PLOT_DIR, exist_ok=True)
-
+    forecast_df["timestamp"] = pd.to_datetime(forecast_df["timestamp"])
+    forecast_df["department"] = forecast_df["segment"].str.split("|").str[0]
+    forecast_df["article"] = forecast_df["segment"].str.split("|").str[1]
     for (dept, art), forecast_grp in forecast_df.groupby(["department", "article"]):
         if forecast_grp.empty:
             continue
@@ -30,7 +34,7 @@ def new_forecast_plot(forecast_df):
         ax.legend()
         plt.tight_layout()
 
-        filename = f"{PLOT_DIR}/{dept}_{art}.png".replace("/", "_")
+        filename = f"{PLOT_DIR}/{dept}_{art}.png"
         plt.savefig(filename, dpi=150)
         plt.close()
 
