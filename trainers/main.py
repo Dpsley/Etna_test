@@ -42,16 +42,14 @@ def fitter():
 def optuna_produce(train_ts, transformers) -> FrozenTrial:
     def objective(trial):
         best_params = {
-            'iterations': trial.suggest_int('iterations', 300, 2500),
-            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.7, log=True),
-            #'iterations': trial.suggest_int('iterations', 1196, 1196),
-            #'learning_rate': trial.suggest_float('learning_rate', 0.2928774987461045, 0.2928774987461045, log=True),
-            'depth': trial.suggest_int('depth', 6, 14),
-            'l2_leaf_reg': trial.suggest_float('l2_leaf_reg', 0.001, 0.3, log=True),
-            'random_strength': trial.suggest_float('random_strength', 0.4, 6),
-            'bagging_temperature': trial.suggest_float('bagging_temperature', 1, 5),
-            'border_count': trial.suggest_int('border_count', 16, 350),
-            'one_hot_max_size': trial.suggest_int('one_hot_max_size', 2, 30),
+            'iterations': trial.suggest_int('iterations', 500, 1500),
+            'learning_rate': trial.suggest_float('learning_rate', 0.25, 0.8, log=True),
+            'depth': trial.suggest_int('depth', 4, 8),
+            'l2_leaf_reg': trial.suggest_float('l2_leaf_reg', 0.1, 20, log=True),
+            'random_strength': trial.suggest_float('random_strength', 0.01, 20.0),
+            'bagging_temperature': trial.suggest_float('bagging_temperature', 0, 5.0),
+            'border_count': trial.suggest_int('border_count', 8, 512),
+            'one_hot_max_size': trial.suggest_int('one_hot_max_size', 2, 25),
             'loss_function': 'RMSE',
             'early_stopping_rounds': 100,
             'random_seed': 42,
@@ -67,6 +65,7 @@ def optuna_produce(train_ts, transformers) -> FrozenTrial:
         )
         # по каждому фолду репортим промежуточный результат
         fold_scores = backtest_result["metrics"]["RMSE"].values
+        print("RMSE:", backtest_result["metrics"]["RMSE"].mean().mean())
         for step, score in enumerate(fold_scores):
             trial.report(score, step)
             if trial.should_prune():
@@ -76,12 +75,12 @@ def optuna_produce(train_ts, transformers) -> FrozenTrial:
 
     study = optuna.create_study(direction="minimize" ,
                                 storage="sqlite:///db.sqlite3",
-                                study_name="quadratic-simple_prefinal",
+                                study_name="quadratic-simple4",
                                 load_if_exists=True,
                                 sampler=optuna.samplers.TPESampler(seed=42),
                                 pruner=optuna.pruners.MedianPruner(n_warmup_steps=5)
                                 )
-    study.optimize(objective, n_trials=100, show_progress_bar=True)
+    study.optimize(objective, n_trials=1, show_progress_bar=True)
     return study.best_trial
 
 fitter()
