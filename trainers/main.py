@@ -19,14 +19,14 @@ print(int(HORIZON))
 def fitter():
     print(int(HORIZON))
     train_ts = load_actual_dataset()
-    print(train_ts)
-    best_trial = optuna_produce(train_ts)
-    print(best_trial)
     transformers=transformers_generator()
+    print(train_ts)
+    best_trial = optuna_produce(train_ts, transformers)
+    print(best_trial)
     final_model = CatBoostMultiSegmentModel(**best_trial.params, logging_level="Silent")
     pipeline = Pipeline(model=final_model, transforms=transformers, horizon=int(HORIZON))
     pipeline.fit(ts=train_ts)
-    forecast= pipeline.forecast(ts=train_ts, prediction_interval=True)
+    forecast= pipeline.forecast(prediction_interval=True)
     forecast_df = forecast.to_pandas(flatten=True).reset_index()
     forecast_df["timestamp"] = pd.to_datetime(forecast_df["timestamp"])
     forecast_df["department"] = forecast_df["segment"].str.split("|").str[0]
@@ -39,35 +39,49 @@ def fitter():
     save_model(pipeline.model)
     save_transformers(transformers)
 
-def optuna_produce(train_ts) -> FrozenTrial:
+def optuna_produce(train_ts, transformers) -> FrozenTrial:
     def objective(trial):
         best_params = {
-            'iterations': trial.suggest_int('iterations', 500, 2500),
-            'learning_rate': trial.suggest_float('learning_rate', 0.1, 0.8, log=True),
-            'depth': trial.suggest_int('depth', 4, 16),
-            'l2_leaf_reg': trial.suggest_float('l2_leaf_reg', 0.01, 10.0, log=True),
-            'random_strength': trial.suggest_float('random_strength', 0.1, 20.0),
-            'bagging_temperature': trial.suggest_float('bagging_temperature', 0, 5.0),
-            'border_count': trial.suggest_int('border_count', 32, 512),
-            'one_hot_max_size': trial.suggest_int('one_hot_max_size', 2, 25),
+            'iterations': trial.suggest_int('iterations', 300, 2500),
+            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.7, log=True),
+            #'iterations': trial.suggest_int('iterations', 1196, 1196),
+            #'learning_rate': trial.suggest_float('learning_rate', 0.2928774987461045, 0.2928774987461045, log=True),
+            'depth': trial.suggest_int('depth', 6, 14),
+            'l2_leaf_reg': trial.suggest_float('l2_leaf_reg', 0.001, 0.3, log=True),
+            'random_strength': trial.suggest_float('random_strength', 0.4, 6),
+            'bagging_temperature': trial.suggest_float('bagging_temperature', 1, 5),
+            'border_count': trial.suggest_int('border_count', 16, 350),
+            'one_hot_max_size': trial.suggest_int('one_hot_max_size', 2, 30),
             'loss_function': 'RMSE',
-            'early_stopping_rounds': 200,
-            'random_seed': 42
+            'early_stopping_rounds': 100,
+            'random_seed': 42,
         }
         model = CatBoostMultiSegmentModel(**best_params)
-        pipeline = Pipeline(model=model, transforms=transformers_generator(), horizon=int(HORIZON))
+        pipeline = Pipeline(model=model, transforms=transformers, horizon=int(HORIZON))
         pipeline.fit(ts=train_ts)
         backtest_result = pipeline.backtest(
             ts=train_ts,
             metrics=[RMSE()],
-            n_folds=3,
-            mode="constant"
+            n_folds=5,
+            mode="expand"
         )
+        # по каждому фолду репортим промежуточный результат
+        fold_scores = backtest_result["metrics"]["RMSE"].values
+        for step, score in enumerate(fold_scores):
+            trial.report(score, step)
+            if trial.should_prune():
+                raise optuna.TrialPruned()
         mean_rmse = backtest_result["metrics"]["RMSE"].mean().mean()
         return mean_rmse
 
-    study = optuna.create_study(direction="minimize")
-    study.optimize(objective, n_trials=30, show_progress_bar=True)
+    study = optuna.create_study(direction="minimize" ,
+                                storage="sqlite:///db.sqlite3",
+                                study_name="quadratic-simple_prefinal",
+                                load_if_exists=True,
+                                sampler=optuna.samplers.TPESampler(seed=42),
+                                pruner=optuna.pruners.MedianPruner(n_warmup_steps=5)
+                                )
+    study.optimize(objective, n_trials=100, show_progress_bar=True)
     return study.best_trial
 
 fitter()
