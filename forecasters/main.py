@@ -9,7 +9,7 @@ from pipelines.main import load_pipline_from_dump
 
 
 def new_forecast(pipeline: Pipeline):
-    forecast = pipeline.forecast(prediction_interval=True, quantiles=[0.25, 0.35])
+    forecast = pipeline.forecast(prediction_interval=True, quantiles=[0.1, 0.5])
     print("forecast", forecast)
 
     forecast_df = forecast.to_pandas(flatten=True).reset_index()
@@ -18,21 +18,21 @@ def new_forecast(pipeline: Pipeline):
     forecast_df["article"] = forecast_df["segment"].str.split("|").str[1]
 
     # проверим, есть ли колонки квантилей
-    has_lower = "target_0.25" in forecast_df.columns
-    has_upper = "target_0.35" in forecast_df.columns
+    has_lower = "target_0.1" in forecast_df.columns
+    has_upper = "target_0.5" in forecast_df.columns
 
     # создаём колонку для квантилей, обрезаем отрицательные значения
     if has_lower:
-        forecast_df["target_0.25"] = forecast_df["target_0.25"].apply(lambda x: max(float(x), 0))
+        forecast_df["target_0.1"] = forecast_df["target_0.1"].apply(lambda x: max(float(x), 0))
     if has_upper:
-        forecast_df["target_0.35"] = forecast_df["target_0.35"].apply(lambda x: max(float(x), 0))
+        forecast_df["target_0.5"] = forecast_df["target_0.5"].apply(lambda x: max(float(x), 0))
 
     # агрегация по департаментам и артикулам
     agg_cols = ["target"]
     if has_lower:
-        agg_cols.append("target_0.25")
+        agg_cols.append("target_0.1")
     if has_upper:
-        agg_cols.append("target_0.35")
+        agg_cols.append("target_0.5")
 
     forecast_summary = forecast_df.groupby(
         ["department", "article"], as_index=False
@@ -40,29 +40,29 @@ def new_forecast(pipeline: Pipeline):
 
     # округление квантилей для наглядности
     if has_lower:
-        forecast_summary["target_0.25"] = forecast_summary["target_0.25"].round()
+        forecast_summary["target_0.1"] = forecast_summary["target_0.1"].round()
     if has_upper:
-        forecast_summary["target_0.35"] = forecast_summary["target_0.35"].round()
+        forecast_summary["target_0.5"] = forecast_summary["target_0.5"].round()
 
     print("=== Прогноз по департаментам и артикулам ===")
     print(forecast_summary.sort_values(["department", "article"]).to_string(index=False))
 
     # печать сумм квантилей
     if has_lower or has_upper:
-        lower_sum = forecast_df["target_0.25"].sum() if has_lower else 0
-        upper_sum = forecast_df["target_0.35"].sum() if has_upper else 0
+        lower_sum = forecast_df["target_0.1"].sum() if has_lower else 0
+        upper_sum = forecast_df["target_0.5"].sum() if has_upper else 0
         print("=== Суммы квантилей ===")
-        print(f"Σ target_0.25 (нижняя граница): {lower_sum:.2f}")
-        print(f"Σ target_0.35 (верхняя граница): {upper_sum:.2f}")
+        print(f"Σ target_0.1 (нижняя граница): {lower_sum:.2f}")
+        print(f"Σ target_0.5 (верхняя граница): {upper_sum:.2f}")
 
     # формируем JSON по сегментам
     result = {}
     for seg in forecast.segments:
         cols = ["timestamp", "target"]
         if has_lower:
-            cols.append("target_0.25")
+            cols.append("target_0.1")
         if has_upper:
-            cols.append("target_0.35")
+            cols.append("target_0.5")
 
         seg_df = forecast_df[forecast_df["segment"] == seg][cols]
 
@@ -70,8 +70,8 @@ def new_forecast(pipeline: Pipeline):
             {
                 "timestamp": row["timestamp"].strftime("%Y-%m-%d"),
                 "target": float(row["target"]),
-                "target_lower": float(row["target_0.25"]) if has_lower else None,
-                "target_upper": float(row["target_0.35"]) if has_upper else None,
+                "target_lower": float(row["target_0.1"]) if has_lower else None,
+                "target_upper": float(row["target_0.5"]) if has_upper else None,
             }
             for _, row in seg_df.iterrows()
         ]

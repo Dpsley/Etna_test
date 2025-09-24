@@ -1,6 +1,6 @@
 import os
 import pandas as pd
-from etna.models import CatBoostMultiSegmentModel
+from etna.models import CatBoostMultiSegmentModel, CatBoostPerSegmentModel
 from etna.metrics import RMSE
 from etna.pipeline import Pipeline
 import optuna
@@ -23,7 +23,8 @@ def fitter():
     print(train_ts)
     best_trial = optuna_produce(train_ts, transformers)
     print(best_trial)
-    final_model = CatBoostMultiSegmentModel(**best_trial.params, logging_level="Silent")
+    #best_trial.params["border_count"] = 32
+    final_model = CatBoostMultiSegmentModel(**best_trial.params, logging_level="Silent", task_type="GPU", gpu_cat_features_storage="CpuPinnedMemory",  leaf_estimation_iterations=3, max_ctr_complexity=1, boosting_type="Plain")
     pipeline = Pipeline(model=final_model, transforms=transformers, horizon=int(HORIZON))
     pipeline.fit(ts=train_ts)
     forecast= pipeline.forecast(prediction_interval=True)
@@ -41,6 +42,7 @@ def fitter():
 
 def optuna_produce(train_ts, transformers) -> FrozenTrial:
     def objective(trial):
+        return 1000
         best_params = {
             'iterations': trial.suggest_int('iterations', 500, 1500),
             'learning_rate': trial.suggest_float('learning_rate', 0.25, 0.8, log=True),
@@ -60,7 +62,7 @@ def optuna_produce(train_ts, transformers) -> FrozenTrial:
         backtest_result = pipeline.backtest(
             ts=train_ts,
             metrics=[RMSE()],
-            n_folds=5,
+            n_folds=1,
             mode="expand"
         )
         # по каждому фолду репортим промежуточный результат

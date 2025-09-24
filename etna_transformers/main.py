@@ -48,7 +48,7 @@ def transformers_generator() -> list:
         LagTransform(in_column="target", lags=[14, 21, 28, 30, 31], out_column="target_lag_small"),
         LagTransform(in_column="target", lags=[1, 3, 5, 7], out_column="lags_macro"),
         LagTransform(in_column="target", lags=[2, 4, 6], out_column="lags_macro_2"),
-        LogTransform(in_column="target", out_column="target_log", inplace=True),
+        LogTransform(in_column="target", out_column="target_log", inplace=False),
         HolidayTransform(out_column="holiday", iso_code="RUS"),
         DateFlagsTransform(
             day_number_in_week=True,
@@ -62,7 +62,7 @@ def transformers_generator() -> list:
             is_weekend=True,
             out_column="flag",
         ),
-        STLTransform(in_column="target", model="arima", period=91, robust=True, model_kwargs={"order": (2, 1, 1)}),
+        STLTransform(in_column="target", model="arima", period=91, robust=True, model_kwargs={"order": (2, 2, 1)}),
         TimeSeriesImputerTransform(in_column="target", strategy="seasonal"),
         SegmentEncoderTransform(),
         #OneHotEncoderTransform(in_column="Department"),

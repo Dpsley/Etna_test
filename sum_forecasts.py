@@ -1,20 +1,27 @@
 import json
-from datetime import datetime
+from pathlib import Path
 
-# допустим, твой JSON лежит в файле data.json
-with open("forecast.json", "r", encoding="utf-8") as f:
+# --- Настройка ---
+INPUT_FILE = Path("forecast.json")  # Укажите путь к вашему файлу
+
+# --- Загрузка данных ---
+with open(INPUT_FILE, 'r', encoding='utf-8') as f:
     data = json.load(f)
 
-results = {}
+# --- Подсчет сумм ---
+segment_sums = {}
+for segment_name, records in data.items():
+    total = sum(record["target"] for record in records)
+    segment_sums[segment_name] = total
 
-for article, records in data.items():
-    july_sum = sum(
-        rec["target"]
-        for rec in records
-        if datetime.fromisoformat(rec["timestamp"]).month == 7
-    )
-    results[article] = july_sum
+# --- Вывод результатов ---
+print("=" * 60)
+print("СУММА ПРОГНОЗОВ (target) ПО СЕГМЕНТАМ")
+print("=" * 60)
 
-print("Суммы за июль по артикулам:")
-for art, total in results.items():
-    print(f"{art}: {total}")
+for segment, total in segment_sums.items():
+    print(f"{segment:<40} : {total:>15,.2f}")
+
+print("-" * 60)
+grand_total = sum(segment_sums.values())
+print(f"{'ИТОГО':<40} : {grand_total:>15,.2f}")
