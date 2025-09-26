@@ -85,4 +85,3 @@ def optuna_produce(train_ts, transformers) -> FrozenTrial:
     study.optimize(objective, n_trials=1, show_progress_bar=True)
     return study.best_trial
 
-fitter()

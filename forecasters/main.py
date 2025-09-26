@@ -83,6 +83,3 @@ def new_forecast(pipeline: Pipeline):
 
     # график на основе forecast_df
     new_forecast_plot(forecast_df)
-
-
-new_forecast(load_pipline_from_dump())
