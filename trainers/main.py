@@ -27,15 +27,15 @@ def fitter():
     final_model = CatBoostMultiSegmentModel(**best_trial.params, logging_level="Silent", task_type="GPU", gpu_cat_features_storage="CpuPinnedMemory",  leaf_estimation_iterations=3, max_ctr_complexity=1, boosting_type="Plain")
     pipeline = Pipeline(model=final_model, transforms=transformers, horizon=int(HORIZON))
     pipeline.fit(ts=train_ts)
-    forecast= pipeline.forecast(prediction_interval=True)
-    forecast_df = forecast.to_pandas(flatten=True).reset_index()
-    forecast_df["timestamp"] = pd.to_datetime(forecast_df["timestamp"])
-    forecast_df["department"] = forecast_df["segment"].str.split("|").str[0]
-    forecast_df["article"] = forecast_df["segment"].str.split("|").str[1]
-    forecast_agg = forecast_df.groupby(["timestamp", "department", "article"], as_index=False)["target"].sum()
-    print("=== Прогноз по департаментам и артикулам ===")
-    forecast_summary = forecast_agg.groupby(["department", "article"], as_index=False)["target"].sum()
-    print(forecast_summary.sort_values(["department", "article"]).to_string(index=False))
+    #forecast= pipeline.forecast(prediction_interval=True)
+    #forecast_df = forecast.to_pandas(flatten=True).reset_index()
+    #forecast_df["timestamp"] = pd.to_datetime(forecast_df["timestamp"])
+    #forecast_df["department"] = forecast_df["segment"].str.split("|").str[0]
+    #forecast_df["article"] = forecast_df["segment"].str.split("|").str[1]
+    #forecast_agg = forecast_df.groupby(["timestamp", "department", "article"], as_index=False)["target"].sum()
+    #print("=== Прогноз по департаментам и артикулам ===")
+    #forecast_summary = forecast_agg.groupby(["department", "article"], as_index=False)["target"].sum()
+    #print(forecast_summary.sort_values(["department", "article"]).to_string(index=False))
     save_pipline(pipeline)
     save_model(pipeline.model)
     save_transformers(transformers)

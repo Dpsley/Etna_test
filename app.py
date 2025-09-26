@@ -18,8 +18,11 @@ app = Flask(__name__)
 
 @app.route('/train_refresh', methods=['POST'])
 def train_refresh():
-    fitter()
-    return True
+    try:
+        fitter()
+        return jsonify({"status": True, "error": None}), 200
+    except Exception as e:
+        return jsonify({"status": False, "error": str(e)}), 500
 
 @app.route('/upload_dataset', methods=['POST'])
 def upload_dataset():
