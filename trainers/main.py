@@ -6,6 +6,11 @@ from etna.metrics import RMSE, MAE, MSE, SMAPE, MAPE
 from etna.pipeline import Pipeline
 import optuna
 from optuna.trial import FrozenTrial
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.kernel_ridge import KernelRidge
+from sklearn.linear_model import ElasticNet, SGDRegressor, BayesianRidge, LinearRegression
+from sklearn.svm import SVR
+
 from datasets.main import load_actual_dataset
 from models.main import save_model
 from pipelines.main import save_pipline
@@ -95,6 +100,7 @@ def optuna_produce(train_ts, transformers) -> FrozenTrial:
 def fitter_ensemble():
     import json
     from pathlib import Path
+    import numpy as np
 
     print(int(HORIZON))
     print("запуск ансамбля")
@@ -102,67 +108,146 @@ def fitter_ensemble():
     transformers = transformers_generator()
     print(train_ts)
 
-    naive_pipeline = Pipeline(
-        model=NaiveModel(lag=1),
-        transforms=transformers,
-        horizon=int(HORIZON)
-    )
-    naive_pipeline_3 = Pipeline(
-        model=NaiveModel(lag=3),
-        transforms=transformers,
-        horizon=int(HORIZON)
-    )
-    naive_pipeline_6 = Pipeline(
-        model=NaiveModel(lag=6),
-        transforms=transformers,
-        horizon=int(HORIZON)
-    )
-    naive_pipeline_12 = Pipeline(
-        model=NaiveModel(lag=12),
-        transforms=transformers,
-        horizon=int(HORIZON)
-    )
-    seasonalma_pipeline_1_3 = Pipeline(
-        model=SeasonalMovingAverageModel(window=1, seasonality=3),
-        transforms=transformers,
-        horizon=int(HORIZON),
-    )
-    seasonalma_pipeline_1_6 = Pipeline(
-        model=SeasonalMovingAverageModel(window=1, seasonality=6),
-        transforms=transformers,
-        horizon=int(HORIZON),
-    )
-    seasonalma_pipeline_2_3 = Pipeline(
-        model=SeasonalMovingAverageModel(window=2, seasonality=1),
-        transforms=transformers,
-        horizon=int(HORIZON),
-    )
-    seasonalma_pipeline_2_6 = Pipeline(
-        model=SeasonalMovingAverageModel(window=2, seasonality=6),
-        transforms=transformers,
-        horizon=int(HORIZON),
-    )
-    catboost_pipeline = Pipeline(
-        model=CatBoostMultiSegmentModel(),
-        transforms=transformers,
-        horizon=int(HORIZON),
+    # --- фабрики пайплайнов, чтобы можно было создать свежий экземпляр ---
+    def make_naive_1():
+        return Pipeline(
+            model=NaiveModel(lag=1),
+            transforms=transformers,
+            horizon=int(HORIZON),
+        )
+
+    def make_naive_3():
+        return Pipeline(
+            model=NaiveModel(lag=3),
+            transforms=transformers,
+            horizon=int(HORIZON),
+        )
+
+    def make_naive_6():
+        return Pipeline(
+            model=NaiveModel(lag=6),
+            transforms=transformers,
+            horizon=int(HORIZON),
+        )
+
+    def make_naive_12():
+        return Pipeline(
+            model=NaiveModel(lag=12),
+            transforms=transformers,
+            horizon=int(HORIZON),
+        )
+
+    def make_seasonal_1_3():
+        return Pipeline(
+            model=SeasonalMovingAverageModel(window=1, seasonality=3),
+            transforms=transformers,
+            horizon=int(HORIZON),
+        )
+
+    def make_seasonal_1_6():
+        return Pipeline(
+            model=SeasonalMovingAverageModel(window=1, seasonality=6),
+            transforms=transformers,
+            horizon=int(HORIZON),
+        )
+
+    def make_seasonal_2_3():
+        # у тебя тут был seasonality=1 с названием _2_3 — это точно баг
+        return Pipeline(
+            model=SeasonalMovingAverageModel(window=2, seasonality=3),
+            transforms=transformers,
+            horizon=int(HORIZON),
+        )
+
+    def make_seasonal_2_6():
+        return Pipeline(
+            model=SeasonalMovingAverageModel(window=2, seasonality=6),
+            transforms=transformers,
+            horizon=int(HORIZON),
+        )
+
+    def make_catboost():
+        # можно сюда потом подставить best_params из optuna, пока — дефолт
+        return Pipeline(
+            model=CatBoostMultiSegmentModel(),
+            transforms=transformers,
+            horizon=int(HORIZON),
+        )
+
+    def make_xgboost():
+        return Pipeline(
+            model=SklearnMultiSegmentModel(regressor=XGBRegressor()),
+            transforms=transformers,
+            horizon=int(HORIZON),
+        )
+
+    def make_lightgbm():
+        return Pipeline(
+            model=SklearnMultiSegmentModel(regressor=LGBMRegressor()),
+            transforms=transformers,
+            horizon=int(HORIZON),
+        )
+
+    # --- словарь всех базовых моделей ---
+    pipeline_factories = {
+        "naive_1": make_naive_1,
+        "naive_3": make_naive_3,
+        "naive_6": make_naive_6,
+        "naive_12": make_naive_12,
+        "seasonal_1_3": make_seasonal_1_3,
+        "seasonal_1_6": make_seasonal_1_6,
+        "seasonal_2_3": make_seasonal_2_3,
+        "seasonal_2_6": make_seasonal_2_6,
+        "catboost": make_catboost,
+        "xgboost": make_xgboost,
+        "lightgbm": make_lightgbm,
+    }
+
+    # --- оцениваем каждую модель по MAE на backtest ---
+    model_mae = {}
+
+    for name, factory in pipeline_factories.items():
+        print(f"\n=== Оценка модели {name} ===")
+        pl = factory()
+        bt_res = pl.backtest(
+            ts=train_ts,
+            metrics=[MAE()],
+            n_folds=3,
+            aggregate_metrics=True,
+            n_jobs=1,
+        )
+        # MAE может быть DataFrame, берём среднее по фолдам
+        mae_val = float(bt_res["metrics"]["MAE"].mean())
+        model_mae[name] = mae_val
+        print(f"{name} -> MAE = {mae_val:.4f}")
+
+    # --- выбираем топ-N моделей по MAE ---
+    TOP_N = 5  # можешь поиграть: 3–6
+    sorted_models = sorted(model_mae.items(), key=lambda x: x[1])
+    top_models = sorted_models[:TOP_N]
+    print("\n=== Топ моделей по MAE ===")
+    for name, mae_val in top_models:
+        print(f"{name}: MAE={mae_val:.4f}")
+
+    # --- считаем веса: чем меньше MAE, тем больше вес ---
+    inv_mae = np.array([1.0 / mae for _, mae in top_models])
+    inv_mae = inv_mae / inv_mae.sum()
+    weights = inv_mae.tolist()
+
+    selected_names = [name for name, _ in top_models]
+    print("\n=== Ансамбль ===")
+    print("Модели:", selected_names)
+    print("Веса:", [round(w, 4) for w in weights])
+
+    # --- создаём новые экземпляры пайплайнов для финального ансамбля ---
+    selected_pipelines = [pipeline_factories[name]() for name in selected_names]
+
+    voting_ensemble = VotingEnsemble(
+        pipelines=selected_pipelines,
+        weights=weights,  # вместо CatBoostRegressor как мета-модели
     )
 
-    xgboost_pipeline = Pipeline(
-        model=SklearnMultiSegmentModel(regressor=XGBRegressor()),
-        transforms=transformers,
-        horizon=int(HORIZON),
-    )
-
-    lightgboost_pipeline = Pipeline(
-        model=SklearnMultiSegmentModel(regressor=LGBMRegressor()),
-        transforms=transformers,
-        horizon=int(HORIZON),
-    )
-
-    pipelines = [naive_pipeline, naive_pipeline_3, naive_pipeline_6, naive_pipeline_12, seasonalma_pipeline_1_3, seasonalma_pipeline_1_6, seasonalma_pipeline_2_3, seasonalma_pipeline_2_6, catboost_pipeline, xgboost_pipeline, lightgboost_pipeline]
-    voting_ensemble = VotingEnsemble(pipelines=pipelines, regressor=CatBoostRegressor())
-
+    # ===== Финальный backtest ансамбля =====
     backtest_result = voting_ensemble.backtest(
         ts=train_ts,
         metrics=[MAE(), MSE(), SMAPE(), MAPE()],
@@ -173,14 +258,15 @@ def fitter_ensemble():
 
     voting_ensamble_metrics = backtest_result["metrics"].iloc[:, 1:].mean().to_frame().T
     voting_ensamble_metrics.index = ["voting ensemble"]
+    print("\n=== Метрики ансамбля ===")
     print(voting_ensamble_metrics.round(4))
 
-    # === обучаем и делаем прогноз ===
+    # ===== Обучаем на всех данных и строим прогноз =====
     voting_ensemble.fit(ts=train_ts)
     forecast = voting_ensemble.forecast(prediction_interval=True, quantiles=[0.025, 0.975])
     print("forecast", forecast)
 
-    # === втащим мету (ProductType, ProductName) по сегментам из train_ts ===
+    # === метаданные по сегментам ===
     meta_df = (
         train_ts.to_pandas(flatten=True)
         .reset_index()
@@ -193,7 +279,6 @@ def fitter_ensemble():
     forecast_df = forecast.to_pandas(flatten=True).reset_index()
     forecast_df["timestamp"] = pd.to_datetime(forecast_df["timestamp"])
 
-    # merge вместо split по '|'
     forecast_df = forecast_df.merge(meta_df, on="segment", how="left")
 
     has_lower = "target_0.025" in forecast_df.columns
@@ -204,15 +289,15 @@ def fitter_ensemble():
     if has_upper:
         forecast_df["target_0.975"] = forecast_df["target_0.975"].apply(lambda x: max(float(x), 0))
 
-    # если где-то метадаты не нашлись — подстрахуемся
     forecast_df["department"] = forecast_df["department"].fillna("UNKNOWN")
-    # полезно иметь код артикула отдельно: segment — это по сути код
     forecast_df["article_code"] = forecast_df["segment"]
     forecast_df["article"] = forecast_df["article"].fillna(forecast_df["article_code"])
 
     agg_cols = ["target"]
-    if has_lower: agg_cols.append("target_0.025")
-    if has_upper: agg_cols.append("target_0.975")
+    if has_lower:
+        agg_cols.append("target_0.025")
+    if has_upper:
+        agg_cols.append("target_0.975")
 
     forecast_summary = (
         forecast_df.groupby(["department", "article"], as_index=False)[agg_cols]
@@ -237,7 +322,7 @@ def fitter_ensemble():
         print(f"Σ target_0.025 (нижняя граница): {lower_sum:.2f}")
         print(f"Σ target_0.975 (верхняя граница): {upper_sum:.2f}")
 
-    # === JSON по сегментам (без .apply на скалярах) ===
+    # === JSON по сегментам ===
     result = {}
     for seg, seg_df in forecast_df.groupby("segment"):
         rows = []
@@ -257,6 +342,7 @@ def fitter_ensemble():
     output_file = Path("forecast.json")
     output_file.write_text(json_str, encoding="utf-8")
     print(f"✅ JSON сохранён в {output_file.resolve()}")
+
 
 
 fitter_ensemble()
