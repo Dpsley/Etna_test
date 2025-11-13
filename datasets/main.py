@@ -21,6 +21,6 @@ def load_actual_dataset() -> TSDataset:
     df = df[df['segment'].isin(segments_to_keep)]
     # создаём TSDataset
     ts_df = TSDataset.to_dataset(df=df)
-    ts = TSDataset(ts_df, freq="D")
+    ts = TSDataset(ts_df, freq="MS")
     return ts
 

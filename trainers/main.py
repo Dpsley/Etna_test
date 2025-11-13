@@ -1,7 +1,8 @@
 import os
-import pandas as pd
-from etna.models import CatBoostMultiSegmentModel, CatBoostPerSegmentModel
-from etna.metrics import RMSE
+from etna.ensembles import VotingEnsemble, StackingEnsemble
+from etna.models import CatBoostMultiSegmentModel, CatBoostPerSegmentModel, ProphetModel, SeasonalMovingAverageModel, \
+    NaiveModel, SklearnMultiSegmentModel
+from etna.metrics import RMSE, MAE, MSE, SMAPE, MAPE
 from etna.pipeline import Pipeline
 import optuna
 from optuna.trial import FrozenTrial
@@ -10,6 +11,11 @@ from models.main import save_model
 from pipelines.main import save_pipline
 from etna_transformers.main import transformers_generator, save_transformers
 from dotenv import load_dotenv
+import pandas as pd
+from etna.datasets import TSDataset
+from xgboost import XGBRegressor
+from lightgbm import LGBMRegressor
+from catboost import CatBoostRegressor
 
 load_dotenv()
 
@@ -18,6 +24,7 @@ print(int(HORIZON))
 
 def fitter():
     print(int(HORIZON))
+    print("Запуск fitter")
     train_ts = load_actual_dataset()
     transformers=transformers_generator()
     print(train_ts)
@@ -42,10 +49,10 @@ def fitter():
 
 def optuna_produce(train_ts, transformers) -> FrozenTrial:
     def objective(trial):
-        return 1000
+#        return 1000
         best_params = {
             'iterations': trial.suggest_int('iterations', 500, 1500),
-            'learning_rate': trial.suggest_float('learning_rate', 0.25, 0.8, log=True),
+            'learning_rate': trial.suggest_float('learning_rate', 0.05, 0.8, log=True),
             'depth': trial.suggest_int('depth', 4, 8),
             'l2_leaf_reg': trial.suggest_float('l2_leaf_reg', 0.1, 20, log=True),
             'random_strength': trial.suggest_float('random_strength', 0.01, 20.0),
@@ -62,8 +69,8 @@ def optuna_produce(train_ts, transformers) -> FrozenTrial:
         backtest_result = pipeline.backtest(
             ts=train_ts,
             metrics=[RMSE()],
-            n_folds=1,
-            mode="expand"
+            n_folds=5,
+            mode="constant"
         )
         # по каждому фолду репортим промежуточный результат
         fold_scores = backtest_result["metrics"]["RMSE"].values
@@ -76,12 +83,180 @@ def optuna_produce(train_ts, transformers) -> FrozenTrial:
         return mean_rmse
 
     study = optuna.create_study(direction="minimize" ,
-                                storage="sqlite:///db.sqlite3",
-                                study_name="quadratic-simple4",
-                                load_if_exists=True,
+                                #storage="sqlite:///db.sqlite3",
+                                #study_name="monthly_test_4",
+                                #load_if_exists=True,
                                 sampler=optuna.samplers.TPESampler(seed=42),
                                 pruner=optuna.pruners.MedianPruner(n_warmup_steps=5)
                                 )
-    study.optimize(objective, n_trials=1, show_progress_bar=True)
+    study.optimize(objective, n_trials=100, show_progress_bar=True)
     return study.best_trial
 
+def fitter_ensemble():
+    import json
+    from pathlib import Path
+
+    print(int(HORIZON))
+    print("запуск ансамбля")
+    train_ts = load_actual_dataset()
+    transformers = transformers_generator()
+    print(train_ts)
+
+    naive_pipeline = Pipeline(
+        model=NaiveModel(lag=1),
+        transforms=transformers,
+        horizon=int(HORIZON)
+    )
+    naive_pipeline_3 = Pipeline(
+        model=NaiveModel(lag=3),
+        transforms=transformers,
+        horizon=int(HORIZON)
+    )
+    naive_pipeline_6 = Pipeline(
+        model=NaiveModel(lag=6),
+        transforms=transformers,
+        horizon=int(HORIZON)
+    )
+    naive_pipeline_12 = Pipeline(
+        model=NaiveModel(lag=12),
+        transforms=transformers,
+        horizon=int(HORIZON)
+    )
+    seasonalma_pipeline_1_3 = Pipeline(
+        model=SeasonalMovingAverageModel(window=1, seasonality=3),
+        transforms=transformers,
+        horizon=int(HORIZON),
+    )
+    seasonalma_pipeline_1_6 = Pipeline(
+        model=SeasonalMovingAverageModel(window=1, seasonality=6),
+        transforms=transformers,
+        horizon=int(HORIZON),
+    )
+    seasonalma_pipeline_2_3 = Pipeline(
+        model=SeasonalMovingAverageModel(window=2, seasonality=1),
+        transforms=transformers,
+        horizon=int(HORIZON),
+    )
+    seasonalma_pipeline_2_6 = Pipeline(
+        model=SeasonalMovingAverageModel(window=2, seasonality=6),
+        transforms=transformers,
+        horizon=int(HORIZON),
+    )
+    catboost_pipeline = Pipeline(
+        model=CatBoostMultiSegmentModel(),
+        transforms=transformers,
+        horizon=int(HORIZON),
+    )
+
+    xgboost_pipeline = Pipeline(
+        model=SklearnMultiSegmentModel(regressor=XGBRegressor()),
+        transforms=transformers,
+        horizon=int(HORIZON),
+    )
+
+    lightgboost_pipeline = Pipeline(
+        model=SklearnMultiSegmentModel(regressor=LGBMRegressor()),
+        transforms=transformers,
+        horizon=int(HORIZON),
+    )
+
+    pipelines = [naive_pipeline, naive_pipeline_3, naive_pipeline_6, naive_pipeline_12, seasonalma_pipeline_1_3, seasonalma_pipeline_1_6, seasonalma_pipeline_2_3, seasonalma_pipeline_2_6, catboost_pipeline, xgboost_pipeline, lightgboost_pipeline]
+    voting_ensemble = VotingEnsemble(pipelines=pipelines, regressor=CatBoostRegressor())
+
+    backtest_result = voting_ensemble.backtest(
+        ts=train_ts,
+        metrics=[MAE(), MSE(), SMAPE(), MAPE()],
+        n_folds=3,
+        aggregate_metrics=True,
+        n_jobs=1,
+    )
+
+    voting_ensamble_metrics = backtest_result["metrics"].iloc[:, 1:].mean().to_frame().T
+    voting_ensamble_metrics.index = ["voting ensemble"]
+    print(voting_ensamble_metrics.round(4))
+
+    # === обучаем и делаем прогноз ===
+    voting_ensemble.fit(ts=train_ts)
+    forecast = voting_ensemble.forecast(prediction_interval=True, quantiles=[0.025, 0.975])
+    print("forecast", forecast)
+
+    # === втащим мету (ProductType, ProductName) по сегментам из train_ts ===
+    meta_df = (
+        train_ts.to_pandas(flatten=True)
+        .reset_index()
+        .sort_values("timestamp")
+        .groupby("segment", as_index=False)[["ProductType", "ProductName"]]
+        .last()
+        .rename(columns={"ProductType": "department", "ProductName": "article"})
+    )
+
+    forecast_df = forecast.to_pandas(flatten=True).reset_index()
+    forecast_df["timestamp"] = pd.to_datetime(forecast_df["timestamp"])
+
+    # merge вместо split по '|'
+    forecast_df = forecast_df.merge(meta_df, on="segment", how="left")
+
+    has_lower = "target_0.025" in forecast_df.columns
+    has_upper = "target_0.975" in forecast_df.columns
+
+    if has_lower:
+        forecast_df["target_0.025"] = forecast_df["target_0.025"].apply(lambda x: max(float(x), 0))
+    if has_upper:
+        forecast_df["target_0.975"] = forecast_df["target_0.975"].apply(lambda x: max(float(x), 0))
+
+    # если где-то метадаты не нашлись — подстрахуемся
+    forecast_df["department"] = forecast_df["department"].fillna("UNKNOWN")
+    # полезно иметь код артикула отдельно: segment — это по сути код
+    forecast_df["article_code"] = forecast_df["segment"]
+    forecast_df["article"] = forecast_df["article"].fillna(forecast_df["article_code"])
+
+    agg_cols = ["target"]
+    if has_lower: agg_cols.append("target_0.025")
+    if has_upper: agg_cols.append("target_0.975")
+
+    forecast_summary = (
+        forecast_df.groupby(["department", "article"], as_index=False)[agg_cols]
+        .sum()
+    )
+
+    if has_lower:
+        forecast_summary["target_0.025"] = forecast_summary["target_0.025"].round()
+    if has_upper:
+        forecast_summary["target_0.975"] = forecast_summary["target_0.975"].round()
+
+    print("=== Прогноз по департаментам и артикулам ===")
+    if not forecast_summary.empty:
+        print(forecast_summary.sort_values(["department", "article"]).to_string(index=False))
+    else:
+        print("Пусто — проверь метаданные сегментов.")
+
+    if has_lower or has_upper:
+        lower_sum = forecast_df["target_0.025"].sum() if has_lower else 0
+        upper_sum = forecast_df["target_0.975"].sum() if has_upper else 0
+        print("=== Суммы квантилей ===")
+        print(f"Σ target_0.025 (нижняя граница): {lower_sum:.2f}")
+        print(f"Σ target_0.975 (верхняя граница): {upper_sum:.2f}")
+
+    # === JSON по сегментам (без .apply на скалярах) ===
+    result = {}
+    for seg, seg_df in forecast_df.groupby("segment"):
+        rows = []
+        for _, r in seg_df.iterrows():
+            item = {
+                "timestamp": r["timestamp"].strftime("%Y-%m-%d"),
+                "target": max(0.0, float(r["target"])),
+            }
+            if has_lower:
+                item["target_lower"] = max(0.0, float(r["target_0.025"]))
+            if has_upper:
+                item["target_upper"] = max(0.0, float(r["target_0.975"]))
+            rows.append(item)
+        result[seg] = rows
+
+    json_str = json.dumps(result, ensure_ascii=False, indent=2)
+    output_file = Path("forecast.json")
+    output_file.write_text(json_str, encoding="utf-8")
+    print(f"✅ JSON сохранён в {output_file.resolve()}")
+
+
+fitter_ensemble()
