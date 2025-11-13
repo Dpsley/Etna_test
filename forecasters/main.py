@@ -69,11 +69,11 @@ def new_forecast(pipeline: Pipeline):
         result[seg] = [
             {
                 "timestamp": row["timestamp"].strftime("%Y-%m-%d"),
-                "target": float(row["target"]),
-                "target_lower": float(row["target_0.1"]) if has_lower else None,
-                "target_upper": float(row["target_0.5"]) if has_upper else None,
+                "target": row["target"].apply(lambda x: max(0, float(x))),
+                "target_lower": row["target_0.1"].apply(lambda x: max(0, float(x))) if has_lower else None,
+                "target_upper": row["target_0.5"].apply(lambda x: max(0, float(x))) if has_upper else None,
             }
-            for _, row in seg_df.iterrows()
+        for _, row in seg_df.iterrows()
         ]
 
     json_str = json.dumps(result, ensure_ascii=False, indent=2)
@@ -83,6 +83,3 @@ def new_forecast(pipeline: Pipeline):
 
     # график на основе forecast_df
     new_forecast_plot(forecast_df)
-
-
-new_forecast(load_pipline_from_dump())
