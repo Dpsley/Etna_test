@@ -108,87 +108,41 @@ def fitter_ensemble():
     transformers = transformers_generator()
     print(train_ts)
 
-    # --- фабрики пайплайнов, чтобы можно было создать свежий экземпляр ---
+    # --- фабрики пайплайнов ---
     def make_naive_1():
-        return Pipeline(
-            model=NaiveModel(lag=1),
-            transforms=transformers,
-            horizon=int(HORIZON),
-        )
+        return Pipeline(model=NaiveModel(lag=1), transforms=transformers, horizon=int(HORIZON))
 
     def make_naive_3():
-        return Pipeline(
-            model=NaiveModel(lag=3),
-            transforms=transformers,
-            horizon=int(HORIZON),
-        )
+        return Pipeline(model=NaiveModel(lag=3), transforms=transformers, horizon=int(HORIZON))
 
     def make_naive_6():
-        return Pipeline(
-            model=NaiveModel(lag=6),
-            transforms=transformers,
-            horizon=int(HORIZON),
-        )
+        return Pipeline(model=NaiveModel(lag=6), transforms=transformers, horizon=int(HORIZON))
 
     def make_naive_12():
-        return Pipeline(
-            model=NaiveModel(lag=12),
-            transforms=transformers,
-            horizon=int(HORIZON),
-        )
+        return Pipeline(model=NaiveModel(lag=12), transforms=transformers, horizon=int(HORIZON))
 
     def make_seasonal_1_3():
-        return Pipeline(
-            model=SeasonalMovingAverageModel(window=1, seasonality=3),
-            transforms=transformers,
-            horizon=int(HORIZON),
-        )
+        return Pipeline(model=SeasonalMovingAverageModel(window=1, seasonality=3), transforms=transformers, horizon=int(HORIZON))
 
     def make_seasonal_1_6():
-        return Pipeline(
-            model=SeasonalMovingAverageModel(window=1, seasonality=6),
-            transforms=transformers,
-            horizon=int(HORIZON),
-        )
+        return Pipeline(model=SeasonalMovingAverageModel(window=1, seasonality=6), transforms=transformers, horizon=int(HORIZON))
 
     def make_seasonal_2_3():
-        # у тебя тут был seasonality=1 с названием _2_3 — это точно баг
-        return Pipeline(
-            model=SeasonalMovingAverageModel(window=2, seasonality=3),
-            transforms=transformers,
-            horizon=int(HORIZON),
-        )
+        return Pipeline(model=SeasonalMovingAverageModel(window=2, seasonality=3), transforms=transformers, horizon=int(HORIZON))
 
     def make_seasonal_2_6():
-        return Pipeline(
-            model=SeasonalMovingAverageModel(window=2, seasonality=6),
-            transforms=transformers,
-            horizon=int(HORIZON),
-        )
+        return Pipeline(model=SeasonalMovingAverageModel(window=2, seasonality=6), transforms=transformers, horizon=int(HORIZON))
 
     def make_catboost():
-        # можно сюда потом подставить best_params из optuna, пока — дефолт
-        return Pipeline(
-            model=CatBoostMultiSegmentModel(),
-            transforms=transformers,
-            horizon=int(HORIZON),
-        )
+        return Pipeline(model=CatBoostMultiSegmentModel(), transforms=transformers, horizon=int(HORIZON))
 
     def make_xgboost():
-        return Pipeline(
-            model=SklearnMultiSegmentModel(regressor=XGBRegressor()),
-            transforms=transformers,
-            horizon=int(HORIZON),
-        )
+        return Pipeline(model=SklearnMultiSegmentModel(regressor=XGBRegressor()), transforms=transformers, horizon=int(HORIZON))
 
     def make_lightgbm():
-        return Pipeline(
-            model=SklearnMultiSegmentModel(regressor=LGBMRegressor()),
-            transforms=transformers,
-            horizon=int(HORIZON),
-        )
+        return Pipeline(model=SklearnMultiSegmentModel(regressor=LGBMRegressor()), transforms=transformers, horizon=int(HORIZON))
 
-    # --- словарь всех базовых моделей ---
+    # --- все модели ---
     pipeline_factories = {
         "naive_1": make_naive_1,
         "naive_3": make_naive_3,
@@ -203,51 +157,76 @@ def fitter_ensemble():
         "lightgbm": make_lightgbm,
     }
 
-    # --- оцениваем каждую модель по MAE на backtest ---
-    model_mae = {}
+    # --- улучшенная оценка моделей ---
+    metrics_list = [MAE(), RMSE(), SMAPE(), MAPE()]
+    metric_names = ["MAE", "RMSE", "SMAPE", "MAPE"]
+
+    model_scores = {}
+
+    print("\n=== Оценка моделей по MAE, RMSE, SMAPE, MAPE ===")
 
     for name, factory in pipeline_factories.items():
-        print(f"\n=== Оценка модели {name} ===")
+        print(f"\n--- Модель: {name} ---")
+
         pl = factory()
         bt_res = pl.backtest(
             ts=train_ts,
-            metrics=[MAE()],
+            metrics=metrics_list,
             n_folds=3,
             aggregate_metrics=True,
             n_jobs=1,
         )
-        # MAE может быть DataFrame, берём среднее по фолдам
-        mae_val = float(bt_res["metrics"]["MAE"].mean())
-        model_mae[name] = mae_val
-        print(f"{name} -> MAE = {mae_val:.4f}")
 
-    # --- выбираем топ-N моделей по MAE ---
-    TOP_N = 5  # можешь поиграть: 3–6
-    sorted_models = sorted(model_mae.items(), key=lambda x: x[1])
+        scores = {}
+        for metric in metric_names:
+            val = float(bt_res["metrics"][metric].mean())
+            scores[metric] = val
+            print(f"{metric}: {val:.4f}")
+
+        combined_score = (
+            0.4 * scores["MAE"] +
+            0.3 * scores["RMSE"] +
+            0.2 * scores["SMAPE"] +
+            0.1 * scores["MAPE"]
+        )
+
+        model_scores[name] = {
+            "combined": combined_score,
+            **scores
+        }
+
+    # --- топ N моделей ---
+    TOP_N = 5
+    sorted_models = sorted(model_scores.items(), key=lambda x: x[1]["combined"])
     top_models = sorted_models[:TOP_N]
-    print("\n=== Топ моделей по MAE ===")
-    for name, mae_val in top_models:
-        print(f"{name}: MAE={mae_val:.4f}")
 
-    # --- считаем веса: чем меньше MAE, тем больше вес ---
-    inv_mae = np.array([1.0 / mae for _, mae in top_models])
-    inv_mae = inv_mae / inv_mae.sum()
-    weights = inv_mae.tolist()
+    print("\n=== Топ моделей по комбинированному скору ===")
+    for name, score in top_models:
+        print(
+            f"{name}: SCORE={score['combined']:.4f}, "
+            f"MAE={score['MAE']:.4f}, RMSE={score['RMSE']:.4f}, "
+            f"SMAPE={score['SMAPE']:.4f}, MAPE={score['MAPE']:.4f}"
+        )
+
+    # --- веса ансамбля ---
+    inv_scores = np.array([1.0 / score["combined"] for _, score in top_models])
+    inv_scores = inv_scores / inv_scores.sum()
+    weights = inv_scores.tolist()
 
     selected_names = [name for name, _ in top_models]
+
     print("\n=== Ансамбль ===")
     print("Модели:", selected_names)
     print("Веса:", [round(w, 4) for w in weights])
 
-    # --- создаём новые экземпляры пайплайнов для финального ансамбля ---
     selected_pipelines = [pipeline_factories[name]() for name in selected_names]
 
     voting_ensemble = VotingEnsemble(
         pipelines=selected_pipelines,
-        weights=weights,  # вместо CatBoostRegressor как мета-модели
+        weights=weights,
     )
 
-    # ===== Финальный backtest ансамбля =====
+    # ===== Финальный backtest =====
     backtest_result = voting_ensemble.backtest(
         ts=train_ts,
         metrics=[MAE(), MSE(), SMAPE(), MAPE()],
@@ -261,12 +240,13 @@ def fitter_ensemble():
     print("\n=== Метрики ансамбля ===")
     print(voting_ensamble_metrics.round(4))
 
-    # ===== Обучаем на всех данных и строим прогноз =====
+    # ===== Fit на всех данных =====
     voting_ensemble.fit(ts=train_ts)
     forecast = voting_ensemble.forecast(prediction_interval=True, quantiles=[0.025, 0.975])
     print("forecast", forecast)
 
-    # === метаданные по сегментам ===
+    # ===== Постобработка =====
+
     meta_df = (
         train_ts.to_pandas(flatten=True)
         .reset_index()
@@ -285,9 +265,9 @@ def fitter_ensemble():
     has_upper = "target_0.975" in forecast_df.columns
 
     if has_lower:
-        forecast_df["target_0.025"] = forecast_df["target_0.025"].apply(lambda x: max(float(x), 0))
+        forecast_df["target_0.025"] = forecast_df["target_0.025"].clip(lower=0)
     if has_upper:
-        forecast_df["target_0.975"] = forecast_df["target_0.975"].apply(lambda x: max(float(x), 0))
+        forecast_df["target_0.975"] = forecast_df["target_0.975"].clip(lower=0)
 
     forecast_df["department"] = forecast_df["department"].fillna("UNKNOWN")
     forecast_df["article_code"] = forecast_df["segment"]
@@ -300,8 +280,7 @@ def fitter_ensemble():
         agg_cols.append("target_0.975")
 
     forecast_summary = (
-        forecast_df.groupby(["department", "article"], as_index=False)[agg_cols]
-        .sum()
+        forecast_df.groupby(["department", "article"], as_index=False)[agg_cols].sum()
     )
 
     if has_lower:
@@ -319,10 +298,9 @@ def fitter_ensemble():
         lower_sum = forecast_df["target_0.025"].sum() if has_lower else 0
         upper_sum = forecast_df["target_0.975"].sum() if has_upper else 0
         print("=== Суммы квантилей ===")
-        print(f"Σ target_0.025 (нижняя граница): {lower_sum:.2f}")
-        print(f"Σ target_0.975 (верхняя граница): {upper_sum:.2f}")
+        print(f"Σ target_0.025: {lower_sum:.2f}")
+        print(f"Σ target_0.975: {upper_sum:.2f}")
 
-    # === JSON по сегментам ===
     result = {}
     for seg, seg_df in forecast_df.groupby("segment"):
         rows = []
@@ -332,9 +310,9 @@ def fitter_ensemble():
                 "target": max(0.0, float(r["target"])),
             }
             if has_lower:
-                item["target_lower"] = max(0.0, float(r["target_0.025"]))
+                item["target_lower"] = float(r["target_0.025"])
             if has_upper:
-                item["target_upper"] = max(0.0, float(r["target_0.975"]))
+                item["target_upper"] = float(r["target_0.975"])
             rows.append(item)
         result[seg] = rows
 
